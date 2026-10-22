@@ -1,9 +1,9 @@
 {
-  "name": "casio-fc100v-calculator",
+  "name": "casio-fc200v-calculator",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Financial calculator in the browser that simulates the Casio FC-100V",
+  "description": "Financial calculator in the browser that simulates the Casio FC-200V",
   "scripts": {
     "start": "python3 -m http.server 8080",
     "test": "node --test tests/*.test.js"

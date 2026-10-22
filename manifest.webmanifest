@@ -1,7 +1,7 @@
 {
-  "name": "FC-100V Calculator",
-  "short_name": "FC-100V",
-  "description": "Financial calculator simulator in the style of the FC-100V",
+  "name": "FC-200V Calculator",
+  "short_name": "FC-200V",
+  "description": "Financial calculator simulator in the style of the FC-200V",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

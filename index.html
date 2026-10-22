@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-    <meta name="theme-color" content="#14171f" />
-    <meta name="description" content="Financial calculator simulator in the style of the FC-100V" />
-    <title>FC-100V Calculator</title>
+    <meta name="theme-color" content="#1b1d22" />
+    <meta name="description" content="Financial calculator simulator in the style of the FC-200V" />
+    <title>FC-200V Calculator</title>
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icon.svg" />
@@ -13,13 +13,16 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="calc" aria-label="FC-100V financial calculator">
+    <main class="calc" aria-label="FC-200V financial calculator">
       <header class="brand">
         <div class="brand-text">
-          <span class="model">FC-100V</span>
+          <span class="model">FC-200V</span>
           <span class="tagline">FINANCIAL CONSULTANT</span>
         </div>
-        <div class="solar" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <div class="solar-wrap">
+          <div class="solar" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <span class="power">TWO WAY POWER</span>
+        </div>
       </header>
 
       <section class="bezel">
@@ -30,13 +33,12 @@
       </section>
 
       <section class="upper">
-        <div class="pair" id="upper-left"></div>
+        <div class="pair" id="top-left"></div>
         <div class="pad" id="pad"></div>
-        <div class="pair" id="upper-right"></div>
+        <div class="pair" id="top-right"></div>
       </section>
 
-      <section class="grid five" id="finance"></section>
-      <section class="grid five" id="scientific"></section>
+      <section class="grid six" id="modes"></section>
       <section class="grid five numpad" id="numpad"></section>
 
       <footer class="foot">
@@ -49,10 +51,11 @@
         <button class="close" aria-label="סגור">✕</button>
       </form>
       <h2>מדריך מהיר</h2>
-      <p>המחשבון עובד כמו ה-FC-100V: בוחרים מצב במקש המצב, גוללים ב-▲▼ בין המשתנים, מקלידים ערך ולוחצים <b>EXE</b>. כדי לחשב משתנה, עומדים עליו ולוחצים <b>SOLVE</b>.</p>
+      <p>המחשבון עובד כמו ה-FC-200V: בוחרים מצב במקש המצב, גוללים ב-▲▼ בין המשתנים, מקלידים ערך ולוחצים <b>EXE</b>. כדי לחשב משתנה, עומדים עליו ולוחצים <b>SOLVE</b>.</p>
+
       <h3>מצבים</h3>
       <ul>
-        <li><b>COMP</b> – חישוב רגיל. <b>Ans</b> = התוצאה האחרונה.</li>
+        <li><b>COMP</b> – חישוב רגיל. <b>Ans</b> = התוצאה האחרונה. ▲▼ (REPLAY) מחזירים חישובים קודמים, ו-◀▶ מזיזים את הסמן לתיקון.</li>
         <li><b>CMPD</b> – ריבית דריבית, משכנתאות והלוואות: n, I%, PV, PMT, FV, P/Y, C/Y. השורה Set מחליפה בין תשלום בסוף תקופה (End) לתחילתה (Begin).</li>
         <li><b>SMPL</b> – ריבית פשוטה: SI (ריבית) ו-SFV (סכום כולל).</li>
         <li><b>CASH</b> – תזרים מזומנים: NPV, IRR, PBP (תקופת החזר), NFV. ב-Csh לוחצים EXE כדי להזין תזרימים (CF0, CF1…), ו-ESC לחזרה.</li>
@@ -60,18 +63,27 @@
         <li><b>CNVR</b> – המרה בין ריבית נומינלית (APR) לאפקטיבית (EFF). n = מספר צבירות בשנה.</li>
         <li><b>COST</b> – עלות (Cst), מחיר מכירה (Sel) ושיעור רווח (Mrg).</li>
         <li><b>DAYS</b> – ימים בין תאריכים. תאריך מוקלד כ-8 ספרות, למשל 01012026.</li>
-        <li><b>STAT</b> – סטטיסטיקה: 1-VAR או רגרסיה ליניארית A+BX. מזינים נתונים ולוחצים SOLVE לתוצאות.</li>
+        <li><b>DEPR</b> – פחת: n שנים, I% (ל-FP ו-DB), PV עלות, FV ערך שייר, j שנה, YR1 חודשים בשנה הראשונה. SOLVE על SL (קו ישר), FP (אחוז קבוע), SYD (סכום ספרות השנים) או DB (יתרה פוחתת). מתחת מופיע RDV, הערך שנותר לפחת.</li>
+        <li><b>BOND</b> – אג"ח: d1 קנייה, d2 פדיון (או n תקופות במצב Term), RDV ערך פדיון ל-100, CPN ריבית קופון, PRC מחיר, YLD תשואה. פתרון PRC מציג גם INT (ריבית צבורה) ו-CST (עלות כוללת).</li>
+        <li><b>BEVN</b> – נקודת איזון: בוחרים 1:BEVN, 2:MOS (מרווח ביטחון), 3:DOL, 4:DFL, 5:DCL (מינופים) או 6: המרת כמות. אפשר לפתור כל משתנה. ESC חוזר לתפריט.</li>
+        <li><b>STAT</b> – סטטיסטיקה: בוחרים סוג (1-VAR או אחת מ-7 רגרסיות) ומזינים נתונים. AC עובר למסך חישוב, ו-<b>SHIFT STAT</b> (S-MENU) מכניס את הערכים: Sum, Var (ממוצע וסטיית תקן), Reg (A, B, r, x̂, ŷ) ו-MinMax.</li>
       </ul>
+
       <h3>סימני כסף</h3>
       <p>כסף שמתקבל חיובי, כסף שמשולם שלילי. הלוואה של 200,000: <code>PV=200000</code>, והתשלום יצא שלילי.</p>
+
       <h3>מקשים מיוחדים</h3>
       <ul>
-        <li><b>SHIFT</b> + מקש = הפונקציה הכתומה שמעליו (למשל SHIFT AC = כיבוי, SHIFT SETUP = איפוס הכול).</li>
-        <li><b>ALPHA</b> + מקש = המשתנה האדום (A, B, C, D, M).</li>
-        <li><b>SHIFT RCL</b> (STO) ואחריו מקש משתנה שומר ערך. <b>RCL</b> ואחריו משתנה משחזר אותו.</li>
-        <li><b>SETUP</b> – תשלום Begin/End, פורמט תאריך, שנה של 365/360 ימים ומספר ספרות אחרי הנקודה (Fix).</li>
-        <li><b>(−)</b> = מספר שלילי. מינוס בתחילת הקלדה נחשב גם הוא לשלילי.</li>
+        <li><b>SHIFT</b> + מקש = הפונקציה שכתובה מעליו, למשל SHIFT 4 = x², SHIFT 1 = sin, SHIFT AC = כיבוי.</li>
+        <li><b>ALPHA</b> + מקש = המשתנה האדום: A, B, C, D, X, Y, M ו-e.</li>
+        <li><b>SHIFT RCL</b> (STO) ואחריו מקש משתנה שומר ערך. <b>RCL</b> ואחריו משתנה משחזר אותו. <b>SHIFT CTLG</b> (VARS) מציג את כל המשתנים.</li>
+        <li><b>CTLG</b> – פונקציות נוספות: Abs, Int, Frac, x⁻¹, x!, log, sin⁻¹, nPr, nCr ועוד.</li>
+        <li><b>SHIFT •</b> (Δ%) – שינוי באחוזים: <code>160,200Δ%</code> = 25. הפסיק הוא SHIFT ).</li>
+        <li><b>SHIFT 9</b> (CLR) – איפוס הגדרות, זיכרון או הכול. <b>SHIFT DEL</b> (INS) – מעבר בין הוספה להחלפה.</li>
+        <li><b>SHIFT SHORT CUT</b> (FMEM) שומר את המסך הנוכחי, ו-<b>SHORT CUT</b> חוזר אליו בלחיצה אחת.</li>
+        <li><b>SETUP</b> – תשלום Begin/End, שנה של 365/360 ימים, dn CI/SI, אג"ח שנתי/חצי שנתי, פורמט תאריך, מעלות/רדיאנים, ספרות (Fix/Sci/Norm), עמודת FREQ ב-STAT, מפריד אלפים וניגודיות.</li>
       </ul>
+
       <h3>מקלדת</h3>
       <p>ספרות ופעולות, Enter = EXE, Backspace = DEL, Delete = AC, Esc = ESC, חיצים לניווט, S = SOLVE.</p>
       <p class="small">סימולטור עצמאי, ללא קשר ליצרנית המחשבון. הערכים נשמרים במכשיר.</p>

@@ -1,5 +1,5 @@
 // Offline support: cache the app shell, serve it cache-first, refresh in the background.
-const CACHE = 'fc100v-v1';
+const CACHE = 'fc200v-v2';
 const FILES = [
   './',
   'index.html',

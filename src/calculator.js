@@ -2,86 +2,191 @@
 // render(state) turns it into the 4×16 display. No DOM access here, so the
 // whole behaviour is testable in Node.
 
-import { evaluate, fitNumber, CalcError, mathError } from './math.js';
+import {
+  evaluate, fitNumber, roundToDisplay, tokensText, clean, CalcError, mathError, DEFAULT_DISP,
+} from './math.js';
 import * as F from './finance.js';
 import { KEY_MAP } from './keys.js';
 
 export const W = 16; // display columns
 export const H = 4; // display lines
 
-// ---------- mode definitions ----------
-const set = (setting) => ({ k: 'Set', type: 'set', setting });
-const inp = (k, extra) => ({ k, type: 'in', ...extra });
-const both = (k, extra) => ({ k, type: 'both', ...extra });
-const out = (k) => ({ k, type: 'out' });
+const segmenter = new Intl.Segmenter();
+const chars = (s) => [...segmenter.segment(s)].map((g) => g.segment);
+const len = (s) => chars(s).length;
+const padL = (s, w) => ' '.repeat(Math.max(0, w - len(s))) + s;
+const padR = (s, w) => s + ' '.repeat(Math.max(0, w - len(s)));
 
-export const MODES = {
-  SMPL: [set('dn'), inp('Dys'), inp('I%'), inp('PV'), out('SI'), out('SFV')],
-  CMPD: [set('payment'), both('n'), both('I%'), both('PV'), both('PMT'), both('FV'), inp('P/Y'), inp('C/Y')],
-  CASH: [inp('I%'), { k: 'Csh', type: 'editor' }, out('NPV'), out('IRR'), out('PBP'), out('NFV')],
-  AMRT: [
-    set('payment'), inp('PM1'), inp('PM2'), inp('n'), inp('I%'), inp('PV'), inp('PMT'), inp('FV'),
-    inp('P/Y'), inp('C/Y'), out('BAL'), out('INT'), out('PRN'), out('ΣINT'), out('ΣPRN'),
-  ],
-  CNVR: [inp('cn', { label: 'n' }), inp('I%'), out('EFF'), out('APR')],
-  COST: [both('Cst'), both('Sel'), both('Mrg')],
-  DAYS: [set('dn'), both('d1', { date: true }), both('d2', { date: true }), both('Dys')],
-};
+// ---------- SETUP ----------
+const DISPLAY_OPTIONS = [
+  'Norm1', 'Norm2',
+  ...Array.from({ length: 10 }, (_, i) => `Fix${i}`),
+  ...Array.from({ length: 10 }, (_, i) => `Sci${i}`),
+];
 
 export const SETUP_ITEMS = [
   { key: 'payment', label: 'Payment', options: ['End', 'Begin'] },
-  { key: 'dateMode', label: 'Date Mode', options: ['MDY', 'DMY'] },
-  { key: 'dn', label: 'dn', options: [365, 360] },
-  { key: 'fix', label: 'Disp', options: [null, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9] },
+  { key: 'dateMode', label: 'Date Mode', options: ['365', '360'] },
+  { key: 'odd', label: 'dn', options: ['CI', 'SI'] },
+  { key: 'periods', label: 'Periods/Y', options: ['Annu', 'Semi'] },
+  { key: 'bondDate', label: 'Bond Date', options: ['Date', 'Term'] },
+  { key: 'dateInput', label: 'Date Input', options: ['MDY', 'DMY'] },
+  { key: 'prfRatio', label: 'PRF/Ratio', options: ['PRF', 'r'] },
+  { key: 'bEven', label: 'B-Even', options: ['Quantity', 'Sales'] },
+  { key: 'angle', label: 'Angle', options: ['Deg', 'Rad', 'Gra'] },
+  { key: 'display', label: 'Display', options: DISPLAY_OPTIONS },
+  { key: 'statFreq', label: 'STAT', options: ['Off', 'On'] },
+  { key: 'sep', label: 'Digit Sep.', options: ['Off', 'On'] },
+  { key: 'contrast', label: 'Contrast', options: ['-3', '-2', '-1', '0', '1', '2', '3'] },
 ];
 
-const STAT_TYPES = ['1-VAR', 'A+BX'];
+const DEFAULT_SETUP = Object.fromEntries(SETUP_ITEMS.map((s) => [s.key, s.options[0]]));
+DEFAULT_SETUP.contrast = '0';
+
+export function dispOf(setup) {
+  const m = /^(Norm|Fix|Sci)(\d)$/.exec(setup.display);
+  return m ? { type: m[1], n: Number(m[2]) } : DEFAULT_DISP;
+}
+
+// ---------- mode definitions ----------
+const set = (setting) => ({ k: 'Set', type: 'set', setting });
+const inp = (k, label, extra) => ({ k, label: label ?? k, type: 'in', ...extra });
+const both = (k, label, extra) => ({ k, label: label ?? k, type: 'both', ...extra });
+const out = (k, label) => ({ k, label: label ?? k, type: 'out' });
+const res = (k, label) => ({ k, label: label ?? k, type: 'res' }); // shown after a solve
+
+const BEVN_SUBS = ['BEVN', 'MOS', 'DOL', 'DFL', 'DCL', 'CONV'];
+
+export function itemsFor(state) {
+  const s = state.setup;
+  switch (state.mode) {
+    case 'SMPL':
+      return [set('dateMode'), inp('Dys'), inp('I%'), inp('PV'), out('SI'), out('SFV')];
+    case 'CMPD':
+      return [set('payment'), both('n'), both('I%'), both('PV'), both('PMT'), both('FV'), inp('P/Y'), inp('C/Y')];
+    case 'CASH':
+      return [inp('I%'), { k: 'Csh', type: 'editor' }, out('NPV'), out('IRR'), out('PBP'), out('NFV')];
+    case 'AMRT':
+      return [
+        set('payment'), inp('PM1'), inp('PM2'), inp('n'), inp('I%'), inp('PV'), inp('PMT'), inp('FV'),
+        inp('P/Y'), inp('C/Y'), out('BAL'), out('INT'), out('PRN'), out('ΣINT'), out('ΣPRN'),
+      ];
+    case 'CNVR':
+      return [inp('cn', 'n'), inp('I%'), out('EFF'), out('APR')];
+    case 'COST':
+      return [both('Cst'), both('Sel'), both('Mrg')];
+    case 'DAYS':
+      return [set('dateMode'), both('d1', 'd1', { date: true }), both('d2', 'd2', { date: true }), both('Dys')];
+    case 'DEPR':
+      return [
+        inp('Dn', 'n'), inp('DI%', 'I%'), inp('DPV', 'PV'), inp('DFV', 'FV'), inp('j'), inp('YR1'),
+        out('SL'), out('FP'), out('SYD'), out('DB'), res('dRDV', 'RDV'),
+      ];
+    case 'BOND':
+      return [
+        set('periods'),
+        ...(s.bondDate === 'Date'
+          ? [inp('bd1', 'd1', { date: true }), inp('bd2', 'd2', { date: true })]
+          : [inp('Bn', 'n')]),
+        inp('bRDV', 'RDV'), inp('CPN'), both('PRC'), both('YLD'), res('bINT', 'INT'), res('CST'),
+      ];
+    case 'BEVN':
+      return bevnItems(state);
+  }
+  return [];
+}
+
+function bevnItems(state) {
+  const s = state.setup;
+  const b = (label) => both(`b${label}`, label);
+  switch (state.bevnSub) {
+    case 'BEVN':
+      return [
+        b('PRC'), b('VCU'), b('FC'), s.prfRatio === 'PRF' ? b('PRF') : b('r%'),
+        s.bEven === 'Quantity' ? b('QBE') : b('SBE'),
+      ];
+    case 'MOS':
+      return [b('SAL'), b('SBE'), b('MOS')];
+    case 'DOL':
+      return [b('SAL'), b('VC'), b('FC'), b('DOL')];
+    case 'DFL':
+      return [b('EBIT'), b('ITR'), b('DFL')];
+    case 'DCL':
+      return [b('SAL'), b('VC'), b('FC'), b('ITR'), b('DCL')];
+    case 'CONV':
+      return [b('QTY'), b('SAL'), b('PRC'), b('VC'), b('VCU')];
+  }
+  return [];
+}
 
 const DEFAULT_VARS = {
   n: 0, 'I%': 0, PV: 0, PMT: 0, FV: 0, 'P/Y': 12, 'C/Y': 12,
   Dys: 0, PM1: 1, PM2: 1, cn: 0, Cst: 0, Sel: 0, Mrg: 0,
-  d1: 1012026, d2: 1012026, A: 0, B: 0, C: 0, D: 0, M: 0, Ans: 0,
+  d1: 1012026, d2: 1012026,
+  Dn: 0, 'DI%': 0, DPV: 0, DFV: 0, j: 1, YR1: 12,
+  bd1: 1012026, bd2: 1012027, Bn: 0, bRDV: 100, CPN: 0, PRC: 0, YLD: 0,
+  bPRC: 0, bVCU: 0, bFC: 0, bPRF: 0, 'br%': 0, bQBE: 0, bSBE: 0, bSAL: 0, bMOS: 0,
+  bVC: 0, bDOL: 0, bEBIT: 0, bITR: 0, bDFL: 0, bDCL: 0, bQTY: 0,
+  A: 0, B: 0, C: 0, D: 0, X: 0, Y: 0, M: 0, Ans: 0,
 };
 
-const DEFAULT_SETUP = { payment: 'End', dateMode: 'MDY', dn: 365, fix: null };
-
-const BINARY_OR_POSTFIX = new Set(['+', '−', '×', '÷', '^(', '²', '³', '⁻¹', '!', '%']);
+const MEMORY_VARS = ['A', 'B', 'C', 'D', 'X', 'Y', 'M'];
+const BINARY_OR_POSTFIX = new Set([
+  '+', '−', '×', '÷', '^(', '²', '³', '⁻¹', '!', '%', '°', 'ʳ', 'ᵍ', 'nPr', 'nCr',
+  'xhat', 'xhat1', 'xhat2', 'yhat',
+]);
 
 // ---------- state ----------
+const emptyCalc = () => ({ edit: { tokens: [], pos: 0 }, resultShown: false, history: [], hist: -1 });
+
 export function createState(saved = {}) {
-  return {
+  const modes = ['COMP', 'STAT', 'SMPL', 'CMPD', 'CASH', 'AMRT', 'CNVR', 'COST', 'DAYS', 'DEPR', 'BOND', 'BEVN'];
+  const mode = modes.includes(saved.mode) ? saved.mode : 'COMP';
+  const state = {
     off: false,
-    mode: saved.mode && (saved.mode === 'COMP' || saved.mode === 'STAT' || MODES[saved.mode]) ? saved.mode : 'COMP',
-    screen: saved.mode === 'STAT' ? 'statType' : 'main',
-    prevScreen: 'main',
+    mode,
+    bevnSub: BEVN_SUBS.includes(saved.bevnSub) ? saved.bevnSub : 'BEVN',
+    screen: 'main',
     shift: false,
     alpha: false,
     pending: null, // 'STO' | 'RCL'
     error: null,
+    message: null,
+    overwrite: false,
     setup: { ...DEFAULT_SETUP, ...saved.setup },
     vars: { ...DEFAULT_VARS, ...saved.vars },
     solved: [],
+    disp: false,
     cursor: 0,
     top: 0,
-    input: null, // tokens being typed into a field
-    comp: { tokens: [], resultShown: false },
+    edit: null, // field being typed in a list screen
+    comp: emptyCalc(),
     cash: Array.isArray(saved.cash) ? saved.cash.slice() : [],
+    cashRow: 0,
+    cashTop: 0,
     stat: {
-      type: STAT_TYPES.includes(saved.stat?.type) ? saved.stat.type : '1-VAR',
-      data: Array.isArray(saved.stat?.data) ? saved.stat.data.map((r) => ({ ...r })) : [],
+      type: F.REG_TYPES.includes(saved.stat?.type) ? saved.stat.type : '1-VAR',
+      data: Array.isArray(saved.stat?.data) ? saved.stat.data.map((r) => ({ y: 0, f: 1, ...r })) : [],
       row: 0,
       col: 0,
+      top: 0,
     },
+    fmem: { 1: null, 2: null, ...saved.fmem },
+    stack: [], // screens to return to from menus
   };
+  if (mode === 'STAT') state.screen = 'statEditor';
+  return state;
 }
 
 export function snapshot(state) {
   return {
     mode: state.mode,
+    bevnSub: state.bevnSub,
     setup: state.setup,
     vars: state.vars,
     cash: state.cash,
     stat: { type: state.stat.type, data: state.stat.data },
+    fmem: state.fmem,
   };
 }
 
@@ -101,7 +206,7 @@ export function press(state, id) {
   if (state.pending) {
     const op = state.pending;
     state.pending = null;
-    if (key.alpha) {
+    if (key.alpha && MEMORY_VARS.includes(key.alpha)) {
       state.shift = state.alpha = false;
       memoryOp(state, op, key.alpha);
       return state;
@@ -111,110 +216,269 @@ export function press(state, id) {
   let action = key.action;
   if (state.alpha && key.alpha) action = `ins:${key.alpha}`;
   else if (state.shift && key.shift) action = key.shift.action;
-  return runAction(state, action);
+  runAction(state, action);
+  return state;
 }
 
 function runAction(state, action) {
-  state.message = null;
   if (action === 'shift') {
     state.shift = !state.shift;
     state.alpha = false;
-    return state;
+    return;
   }
   if (action === 'alpha') {
     state.alpha = !state.alpha;
     state.shift = false;
-    return state;
+    return;
   }
   state.shift = state.alpha = false;
 
+  if (state.message) {
+    // Any key dismisses a message screen.
+    state.message = null;
+    if (action !== 'off' && !action.startsWith('mode:')) return;
+  }
   if (action === 'off') {
     state.off = true;
-    return state;
+    return;
   }
   if (action.startsWith('mode:')) {
     switchMode(state, action.slice(5));
-    return state;
+    return;
   }
   if (state.error) {
     if (['ac', 'on', 'esc', 'left', 'right', 'del', 'exe'].includes(action)) state.error = null;
-    return state;
+    return;
   }
   if (action === 'on') {
     clearDisplay(state);
-    return state;
+    return;
   }
-  if (action === 'setup' || action === 'clr') {
-    if (state.screen !== 'setup' && state.screen !== 'clr') state.prevScreen = state.screen;
-    state.screen = action === 'setup' ? 'setup' : 'clr';
-    state.setupCursor = 0;
-    state.setupTop = 0;
-    state.input = null;
-    return state;
+
+  switch (action) {
+    case 'setup':
+      if (state.screen !== 'setup') openScreen(state, 'setup');
+      state.setupCursor = 0;
+      state.setupTop = 0;
+      return;
+    case 'clr':
+      openMenu(state, [
+        { text: '1:Setup', run: () => confirm(state, 'Clear Setup?', () => clearSetup(state), 'Clear Setup!') },
+        { text: '2:Memory', run: () => confirm(state, 'Clear Memory?', () => clearMemory(state), 'Clear Memory!') },
+        { text: '3:All', run: () => confirm(state, 'Clear All?', () => { clearSetup(state); clearMemory(state); }, 'Clear All!') },
+      ], 'Clear?');
+      return;
+    case 'sto':
+    case 'rcl':
+      state.pending = action.toUpperCase();
+      return;
+    case 'm+':
+    case 'm-': {
+      const v = currentValue(state);
+      if (v !== null) state.vars.M += action === 'm+' ? v : -v;
+      return;
+    }
+    case 'insmode':
+      state.overwrite = !state.overwrite;
+      return;
+    case 'ctlg':
+      openMenu(state, CATALOG.map(([text, token], i) => ({
+        text: `${i + 1}:${text}`,
+        run: () => runAction(state, `ins:${token}`),
+      })), null, true);
+      return;
+    case 'vars':
+      openScreen(state, 'vars');
+      state.varsCursor = 0;
+      state.varsTop = 0;
+      return;
+    case 'drg':
+      openMenu(state, [
+        { text: '1:°', run: () => runAction(state, 'ins:°') },
+        { text: '2:r', run: () => runAction(state, 'ins:ʳ') },
+        { text: '3:g', run: () => runAction(state, 'ins:ᵍ') },
+      ], null, true);
+      return;
+    case 'smenu':
+      if (state.mode === 'STAT' && ['statEditor', 'statCalc'].includes(state.screen)) openStatMenu(state);
+      return;
   }
-  if (action === 'sto' || action === 'rcl') {
-    state.pending = action.toUpperCase();
-    return state;
+  if (action.startsWith('fmem:')) {
+    const slot = action.slice(5);
+    state.fmem[slot] = {
+      mode: state.mode,
+      bevnSub: state.bevnSub,
+      cursor: state.cursor,
+      tokens: state.mode === 'COMP' && state.comp.edit.tokens.length ? [...state.comp.edit.tokens] : null,
+    };
+    state.message = `FMEM${slot} Stored`;
+    return;
   }
-  if (action === 'm+' || action === 'm-') {
-    const v = currentValue(state);
-    if (v !== null) state.vars.M += action === 'm+' ? v : -v;
-    return state;
+  if (action.startsWith('shortcut:')) {
+    const f = state.fmem[action.slice(9)];
+    if (!f) return;
+    switchMode(state, f.mode, f.bevnSub);
+    if (state.screen === 'main' && state.mode !== 'COMP') {
+      state.cursor = Math.min(f.cursor, itemsFor(state).length - 1);
+      scrollTo(state, 'top', state.cursor);
+    }
+    if (f.tokens) state.comp.edit = { tokens: [...f.tokens], pos: f.tokens.length };
+    return;
   }
 
   const handler = {
-    main: state.mode === 'COMP' ? compKey : listKey,
+    main: state.mode === 'COMP' ? calcKey : listKey,
     setup: setupKey,
-    clr: clrKey,
+    menu: menuKey,
+    confirm: confirmKey,
+    vars: varsKey,
     cashEditor: cashKey,
-    statType: statTypeKey,
     statEditor: statEditorKey,
-    statResults: statResultsKey,
+    statCalc: calcKey,
   }[state.screen];
   handler(state, action);
-  return state;
 }
 
+const CATALOG = [
+  ['Abs(', 'Abs('], ['Int(', 'Int('], ['Intg(', 'Intg('], ['Frac(', 'Frac('],
+  ['x⁻¹', '⁻¹'], ['x!', '!'], ['x³', '³'], ['∛(', '∛('], ['log(', 'log('], ['10^(', '10^('],
+  ['sin⁻¹(', 'sin⁻¹('], ['cos⁻¹(', 'cos⁻¹('], ['tan⁻¹(', 'tan⁻¹('], ['nPr', 'nPr'], ['nCr', 'nCr'],
+];
+
 function fail(state, e) {
-  if (e instanceof CalcError) state.error = e.kind;
-  else state.error = 'Math ERROR';
+  state.error = e instanceof CalcError ? e.kind : 'Math ERROR';
+}
+
+function ctx(state) {
+  const disp = dispOf(state.setup);
+  return {
+    vars: state.vars,
+    angle: state.setup.angle,
+    round: (x) => roundToDisplay(x, disp),
+    stat: (name, arg) => statValue(state, name, arg),
+  };
+}
+
+function statValue(state, name, arg) {
+  if (state.mode !== 'STAT') throw mathError();
+  const { type, data } = state.stat;
+  const s = F.statistics(data, type);
+  if (arg !== undefined) {
+    if (type === '1-VAR') throw mathError();
+    return F.estimate(name, arg, type, s);
+  }
+  const v = s[name];
+  if (v === undefined || !Number.isFinite(v)) throw mathError();
+  return v;
 }
 
 function clearDisplay(state) {
   state.error = null;
-  state.input = null;
+  state.edit = null;
   state.pending = null;
-  if (state.mode === 'COMP') state.comp = { tokens: [], resultShown: false };
+  state.message = null;
+  if (state.screen === 'main' && state.mode === 'COMP') {
+    state.comp.edit = { tokens: [], pos: 0 };
+    state.comp.resultShown = false;
+  }
 }
 
-function switchMode(state, mode) {
+function switchMode(state, mode, bevnSub) {
   state.mode = mode;
-  state.screen = mode === 'STAT' ? 'statType' : 'main';
+  state.screen = 'main';
+  state.stack = [];
   state.cursor = 0;
   state.top = 0;
-  state.input = null;
+  state.edit = null;
   state.error = null;
   state.pending = null;
+  state.message = null;
   state.solved = [];
-  if (mode === 'COMP') state.comp = { tokens: [], resultShown: false };
+  state.disp = false;
+  if (mode === 'COMP') {
+    state.comp.edit = { tokens: [], pos: 0 };
+    state.comp.resultShown = false;
+  }
+  if (mode === 'STAT') {
+    state.screen = 'statEditor'; // where ESC from the type menu returns to
+    openMenu(state, F.REG_TYPES.map((t, i) => ({
+      text: `${i + 1}:${t}`,
+      run: () => {
+        state.stat.type = t;
+        state.stat.col = 0;
+        state.screen = 'statEditor';
+        state.stack = [];
+      },
+    })), null);
+    state.menu.cursor = F.REG_TYPES.indexOf(state.stat.type);
+    scrollTo(state.menu, 'top', state.menu.cursor);
+  }
+  if (mode === 'BEVN') {
+    if (bevnSub) state.bevnSub = bevnSub;
+    else {
+      openMenu(state, BEVN_SUBS.map((s, i) => ({
+        text: `${i + 1}:${s === 'CONV' ? 'QUANTITY CNV' : s}`,
+        run: () => {
+          state.bevnSub = s;
+          state.screen = 'main';
+          state.stack = [];
+          state.cursor = 0;
+          state.top = 0;
+        },
+      })), null);
+      state.menu.cursor = BEVN_SUBS.indexOf(state.bevnSub);
+      scrollTo(state.menu, 'top', state.menu.cursor);
+    }
+  }
 }
 
-// Value that STO / M+ act on: the evaluated COMP line, the selected field, or Ans.
+function openScreen(state, screen) {
+  state.stack.push(state.screen);
+  state.screen = screen;
+}
+
+function back(state) {
+  state.screen = state.stack.pop() ?? 'main';
+}
+
+// A numbered menu. `insertBack` menus return to the previous screen before
+// running the choice, so an inserted token lands where the user was typing.
+function openMenu(state, items, title, insertBack = false) {
+  openScreen(state, 'menu');
+  state.menu = { items, title, cursor: 0, top: 0, insertBack };
+}
+
+function confirm(state, text, run, done) {
+  state.screen = 'confirm';
+  state.confirm = { text, run, done };
+}
+
+function clearSetup(state) {
+  state.setup = { ...DEFAULT_SETUP };
+}
+
+function clearMemory(state) {
+  state.vars = { ...DEFAULT_VARS };
+  state.cash = [];
+  state.stat.data = [];
+  state.fmem = { 1: null, 2: null };
+  state.solved = [];
+}
+
+// Value that STO / M+ act on: the evaluated calculation line, the selected field, or Ans.
 function currentValue(state) {
   try {
-    if (state.screen === 'main' && state.mode === 'COMP') {
+    if (isCalcScreen(state)) {
       const c = state.comp;
-      if (c.tokens.length && !c.resultShown) {
-        state.vars.Ans = evaluate(c.tokens, state.vars);
-        c.resultShown = true;
-      }
-      return state.vars.Ans;
+      if (c.edit.tokens.length && !c.resultShown) execute(state);
+      return state.error ? null : state.vars.Ans;
     }
     if (state.screen === 'main') {
-      const item = MODES[state.mode][state.cursor];
-      if (state.input?.length) commitInput(state, item);
+      const item = itemsFor(state)[state.cursor];
+      if (state.edit?.tokens.length) commitInput(state, item);
       const v = state.vars[item.k];
-      if (typeof v === 'number' && !item.date && (item.type !== 'out' || state.solved.includes(item.k))) return v;
+      const shown = item.type === 'in' || item.type === 'both' || state.solved.includes(item.k);
+      if (typeof v === 'number' && !item.date && shown) return v;
     }
     return state.vars.Ans;
   } catch (e) {
@@ -232,128 +496,196 @@ function memoryOp(state, op, letter) {
   if (v !== null) state.vars[letter] = v;
 }
 
-// Shared token insertion for every input field.
-function pushToken(tokens, t) {
-  if (!tokens.length && t === '−') t = '-'; // leading minus means negative
-  tokens.push(t);
+const isCalcScreen = (state) =>
+  (state.screen === 'main' && state.mode === 'COMP') || state.screen === 'statCalc';
+
+// ---------- line editing (shared by every input) ----------
+function insertToken(state, edit, t) {
+  if (!edit.tokens.length && t === '−') t = '-'; // a leading minus means negative
+  if (state.overwrite && edit.pos < edit.tokens.length) edit.tokens[edit.pos] = t;
+  else edit.tokens.splice(edit.pos, 0, t);
+  edit.pos++;
 }
 
-// ---------- COMP ----------
-function compKey(state, action) {
+function deleteToken(edit) {
+  if (edit.pos > 0) {
+    edit.tokens.splice(edit.pos - 1, 1);
+    edit.pos--;
+  } else edit.tokens.splice(0, 1);
+}
+
+function moveInEdit(edit, d) {
+  edit.pos = Math.max(0, Math.min(edit.tokens.length, edit.pos + d));
+}
+
+// ---------- COMP and the STAT calculation screen ----------
+function execute(state) {
+  const c = state.comp;
+  try {
+    state.vars.Ans = evaluate(c.edit.tokens, ctx(state));
+    c.resultShown = true;
+    const last = c.history[c.history.length - 1];
+    if (!last || last.join('\u0000') !== c.edit.tokens.join('\u0000')) {
+      c.history.push([...c.edit.tokens]);
+      if (c.history.length > 30) c.history.shift();
+    }
+    c.hist = -1;
+  } catch (e) {
+    fail(state, e);
+    c.edit.pos = c.edit.tokens.length;
+  }
+}
+
+function calcKey(state, action) {
   const c = state.comp;
   if (action.startsWith('ins:')) {
     const t = action.slice(4);
     if (c.resultShown) {
-      c.tokens = BINARY_OR_POSTFIX.has(t) ? ['Ans'] : [];
+      c.edit = BINARY_OR_POSTFIX.has(t) ? { tokens: ['Ans'], pos: 1 } : { tokens: [], pos: 0 };
       c.resultShown = false;
     }
-    pushToken(c.tokens, t);
+    insertToken(state, c.edit, t);
     return;
   }
   switch (action) {
     case 'exe':
-    case 'solve':
-      if (!c.tokens.length) return;
-      try {
-        state.vars.Ans = evaluate(c.tokens, state.vars);
-        c.resultShown = true;
-      } catch (e) {
-        fail(state, e);
-      }
+      if (c.edit.tokens.length) execute(state);
       return;
     case 'del':
-      if (c.resultShown) c.resultShown = false;
-      else c.tokens.pop();
+      if (c.resultShown) {
+        c.resultShown = false;
+        c.edit.pos = c.edit.tokens.length;
+      } else deleteToken(c.edit);
       return;
     case 'ac':
+      c.edit = { tokens: [], pos: 0 };
+      c.resultShown = false;
+      c.hist = -1;
+      return;
     case 'esc':
-      state.comp = { tokens: [], resultShown: false };
+      if (state.screen === 'statCalc') state.screen = 'statEditor';
       return;
     case 'left':
     case 'right':
-    case 'up':
-      c.resultShown = false;
+      if (c.resultShown) {
+        c.resultShown = false;
+        c.edit.pos = action === 'left' ? c.edit.tokens.length : 0;
+      } else moveInEdit(c.edit, action === 'left' ? -1 : 1);
       return;
+    case 'up':
+    case 'down': {
+      // REPLAY: step through earlier calculations.
+      if (!c.history.length) return;
+      let h = c.hist === -1 ? c.history.length : c.hist;
+      h += action === 'up' ? -1 : 1;
+      if (h < 0) h = 0;
+      if (h >= c.history.length) {
+        c.hist = -1;
+        return;
+      }
+      c.hist = h;
+      c.edit = { tokens: [...c.history[h]], pos: c.history[h].length };
+      c.resultShown = false;
+    }
   }
 }
 
-// ---------- list modes (SMPL, CMPD, CASH, AMRT, CNVR, COST, DAYS) ----------
-function moveCursor(state, delta, count) {
-  state.cursor = Math.max(0, Math.min(count - 1, state.cursor + delta));
+// ---------- list modes ----------
+function scrollTo(obj, field, idx, visible = H) {
+  obj[field] ??= 0;
+  if (idx < obj[field]) obj[field] = idx;
+  if (idx >= obj[field] + visible) obj[field] = idx - visible + 1;
+}
+
+function moveCursor(state, delta) {
+  const items = itemsFor(state);
+  let c = state.cursor;
+  // Result-only rows (RDV, INT, CST) are not stops for the cursor until solved.
+  do c += delta;
+  while (c >= 0 && c < items.length && items[c].type === 'res' && !state.solved.includes(items[c].k));
+  if (c < 0 || c >= items.length) return;
+  state.cursor = c;
+  state.disp = false;
   scrollTo(state, 'top', state.cursor);
 }
 
-function scrollTo(state, field, idx, visible = H) {
-  if (idx < state[field]) state[field] = idx;
-  if (idx >= state[field] + visible) state[field] = idx - visible + 1;
-}
-
 function listKey(state, action) {
-  const items = MODES[state.mode];
+  const items = itemsFor(state);
+  if (state.cursor >= items.length) state.cursor = 0;
   const item = items[state.cursor];
   const editable = item.type === 'in' || item.type === 'both';
 
   if (action.startsWith('ins:')) {
     if (!editable) return;
-    state.input ??= [];
-    pushToken(state.input, action.slice(4));
+    state.edit ??= { tokens: [], pos: 0 };
+    state.disp = false;
+    insertToken(state, state.edit, action.slice(4));
     return;
   }
   switch (action) {
     case 'del':
-      state.input?.pop();
+      if (state.edit) deleteToken(state.edit);
+      return;
+    case 'left':
+    case 'right':
+      if (state.edit) moveInEdit(state.edit, action === 'left' ? -1 : 1);
       return;
     case 'ac':
+      state.edit = null;
+      return;
     case 'esc':
-      state.input = null;
+      if (state.edit) state.edit = null;
+      else if (state.mode === 'BEVN') switchMode(state, 'BEVN');
       return;
     case 'up':
     case 'down':
-      state.input = null;
-      moveCursor(state, action === 'up' ? -1 : 1, items.length);
+      state.edit = null;
+      moveCursor(state, action === 'up' ? -1 : 1);
       return;
     case 'exe':
-      if (state.input) {
+      if (state.edit) {
         try {
           commitInput(state, item);
-          moveCursor(state, 1, items.length);
+          moveCursor(state, 1);
         } catch (e) {
           fail(state, e);
         }
       } else if (item.type === 'set') {
-        const s = SETUP_ITEMS.find((x) => x.key === item.setting);
-        cycleSetting(state, s, 1);
+        cycleSetting(state, SETUP_ITEMS.find((x) => x.key === item.setting), 1);
       } else if (item.type === 'editor') {
-        state.screen = 'cashEditor';
+        openScreen(state, 'cashEditor');
         state.cashRow = 0;
         state.cashTop = 0;
       } else if (item.type === 'out') {
         solveItem(state, item);
       } else {
-        moveCursor(state, 1, items.length);
+        moveCursor(state, 1);
       }
       return;
     case 'solve':
-      state.input = null;
+      state.edit = null;
       if (item.type === 'out' || item.type === 'both') solveItem(state, item);
       return;
   }
 }
 
 function commitInput(state, item) {
-  const v = evaluate(state.input, state.vars);
-  if (item.date) F.parseDate(v, state.setup.dateMode);
+  const v = evaluate(state.edit.tokens, ctx(state));
+  if (item.date) F.parseDate(v, state.setup.dateInput);
   state.vars[item.k] = v;
-  state.input = null;
+  state.edit = null;
   state.solved = [];
 }
 
 function solveItem(state, item) {
   try {
-    const v = compute(state, item.k);
-    state.vars[item.k] = v;
-    if (!item.date) state.vars.Ans = v;
-    state.solved = item.type === 'out' ? [...state.solved, item.k] : [];
+    const results = compute(state, item.k);
+    for (const k of Object.keys(results)) results[k] = clean(results[k]);
+    Object.assign(state.vars, results);
+    if (!item.date) state.vars.Ans = results[item.k];
+    const keys = Object.keys(results);
+    state.solved = item.type === 'out' ? [...new Set([...state.solved, ...keys])] : keys.filter((k) => k !== item.k);
+    state.disp = true;
   } catch (e) {
     fail(state, e);
   }
@@ -362,54 +694,85 @@ function solveItem(state, item) {
 function tvm(state) {
   const v = state.vars;
   return {
-    n: v.n, iPct: v['I%'], PV: v.PV, PMT: v.PMT, FV: v.FV,
-    PY: v['P/Y'], CY: v['C/Y'], begin: state.setup.payment === 'Begin',
+    n: v.n, iPct: v['I%'], PV: v.PV, PMT: v.PMT, FV: v.FV, PY: v['P/Y'], CY: v['C/Y'],
+    begin: state.setup.payment === 'Begin', odd: state.setup.odd,
   };
 }
 
+// Returns { key: value } for the solved variable plus any companion results.
 export function compute(state, key) {
   const v = state.vars;
-  const dn = state.setup.dn;
+  const s = state.setup;
+  const dn = Number(s.dateMode);
   switch (state.mode) {
     case 'SMPL':
-      return F.simpleInterest({ Dys: v.Dys, iPct: v['I%'], PV: v.PV, dn })[key];
+      return { [key]: F.simpleInterest({ Dys: v.Dys, iPct: v['I%'], PV: v.PV, dn })[key] };
     case 'CMPD':
-      return F.solveTVM(key, tvm(state));
-    case 'CASH':
-      if (key === 'NPV') return F.npv(v['I%'], state.cash);
-      if (key === 'IRR') return F.irr(state.cash);
-      if (key === 'PBP') return F.pbp(v['I%'], state.cash);
-      if (key === 'NFV') return F.nfv(v['I%'], state.cash);
-      break;
-    case 'AMRT':
-      return F.amortize({ ...tvm(state), PM1: v.PM1, PM2: v.PM2 })[key];
-    case 'CNVR':
-      return key === 'EFF' ? F.toEffective(v.cn, v['I%']) : F.toNominal(v.cn, v['I%']);
-    case 'COST':
-      return F.solveCost(key, v);
-    case 'DAYS': {
-      const mode = state.setup.dateMode;
-      if (key === 'Dys') {
-        return F.daysBetween(F.parseDate(v.d1, mode), F.parseDate(v.d2, mode), dn);
-      }
-      if (dn !== 365) throw mathError();
-      if (key === 'd1') return F.encodeDate(F.addDays(F.parseDate(v.d2, mode), -v.Dys), mode);
-      return F.encodeDate(F.addDays(F.parseDate(v.d1, mode), v.Dys), mode);
+      return { [key]: F.solveTVM(key, tvm(state)) };
+    case 'CASH': {
+      const fn = { NPV: F.npv, PBP: F.pbp, NFV: F.nfv }[key];
+      return { [key]: key === 'IRR' ? F.irr(state.cash) : fn(v['I%'], state.cash) };
     }
+    case 'AMRT':
+      return { [key]: F.amortize({ ...tvm(state), PM1: v.PM1, PM2: v.PM2 })[key] };
+    case 'CNVR':
+      return { [key]: key === 'EFF' ? F.toEffective(v.cn, v['I%']) : F.toNominal(v.cn, v['I%']) };
+    case 'COST':
+      return { [key]: F.solveCost(key, v) };
+    case 'DAYS': {
+      const di = s.dateInput;
+      if (key === 'Dys') return { Dys: F.daysBetween(F.parseDate(v.d1, di), F.parseDate(v.d2, di), dn) };
+      if (dn !== 365) throw mathError();
+      if (key === 'd1') return { d1: F.encodeDate(F.addDays(F.parseDate(v.d2, di), -v.Dys), di) };
+      return { d2: F.encodeDate(F.addDays(F.parseDate(v.d1, di), v.Dys), di) };
+    }
+    case 'DEPR': {
+      const r = F.depreciation(key, { n: v.Dn, iPct: v['DI%'], PV: v.DPV, FV: v.DFV, j: v.j, YR1: v.YR1 });
+      return { [key]: r.dep, dRDV: r.RDV };
+    }
+    case 'BOND': {
+      const dateMode = s.bondDate === 'Date';
+      const args = {
+        dateMode,
+        d1: dateMode ? F.parseDate(v.bd1, s.dateInput) : null,
+        d2: dateMode ? F.parseDate(v.bd2, s.dateInput) : null,
+        n: v.Bn, RDV: v.bRDV, CPN: v.CPN, PRC: v.PRC, YLD: v.YLD,
+        M: s.periods === 'Annu' ? 1 : 2, dn,
+      };
+      const YLD = key === 'YLD' ? F.bondYield(args) : v.YLD;
+      const p = F.bondPrice({ ...args, YLD });
+      return key === 'YLD' ? { YLD, bINT: p.INT, CST: p.PRC + p.INT } : { PRC: p.PRC, bINT: p.INT, CST: p.CST };
+    }
+    case 'BEVN':
+      return solveBevn(state, key);
   }
   throw mathError();
 }
 
-// ---------- SETUP / CLR ----------
+function solveBevn(state, key) {
+  const items = bevnItems(state);
+  const label = items.find((i) => i.k === key).label;
+  const vals = Object.fromEntries(items.map((i) => [i.label, state.vars[i.k]]));
+  let rel = state.bevnSub;
+  if (rel === 'CONV') {
+    rel = ['VC', 'VCU'].includes(label) || (label === 'QTY' && vals.PRC === 0) ? 'QTY:VC' : 'QTY:SAL';
+  }
+  const opts = { ratio: state.setup.prfRatio === 'r', sales: state.setup.bEven === 'Sales' };
+  const fn = F.BEVN_RELATIONS[rel];
+  const x = F.solveFor((t) => fn({ ...vals, [label]: t }, opts), vals[label]);
+  return { [key]: x };
+}
+
+// ---------- SETUP ----------
 function cycleSetting(state, item, dir) {
   const opts = item.options;
   const idx = opts.indexOf(state.setup[item.key]);
-  const next = opts[(idx + dir + opts.length) % opts.length];
-  if (item.key === 'dateMode') {
+  const next = opts[(Math.max(0, idx) + dir + opts.length) % opts.length];
+  if (item.key === 'dateInput') {
     // Keep stored dates meaning the same day after the order changes.
-    for (const d of ['d1', 'd2']) {
+    for (const d of ['d1', 'd2', 'bd1', 'bd2']) {
       try {
-        state.vars[d] = F.encodeDate(F.parseDate(state.vars[d], state.setup.dateMode), next);
+        state.vars[d] = F.encodeDate(F.parseDate(state.vars[d], state.setup.dateInput), next);
       } catch {
         /* leave invalid dates as they are */
       }
@@ -417,6 +780,7 @@ function cycleSetting(state, item, dir) {
   }
   state.setup[item.key] = next;
   state.solved = [];
+  state.disp = false;
 }
 
 function setupKey(state, action) {
@@ -436,65 +800,103 @@ function setupKey(state, action) {
       return;
     case 'esc':
     case 'ac':
-      state.screen = state.prevScreen;
-      return;
+      back(state);
   }
 }
 
-function clrKey(state, action) {
+// ---------- menus ----------
+function menuKey(state, action) {
+  const m = state.menu;
+  const choose = (idx) => {
+    const item = m.items[idx];
+    if (!item) return;
+    if (m.insertBack) back(state);
+    item.run();
+  };
+  if (/^ins:[1-9]$/.test(action)) return choose(Number(action.slice(4)) - 1);
+  switch (action) {
+    case 'up':
+    case 'down': {
+      const visible = m.title ? H - 1 : H;
+      m.cursor = Math.max(0, Math.min(m.items.length - 1, m.cursor + (action === 'up' ? -1 : 1)));
+      scrollTo(m, 'top', m.cursor, visible);
+      return;
+    }
+    case 'exe':
+      return choose(m.cursor);
+    case 'esc':
+    case 'ac':
+      if (state.stack.length) back(state);
+  }
+}
+
+function confirmKey(state, action) {
   if (action === 'exe') {
-    state.vars = { ...DEFAULT_VARS };
-    state.setup = { ...DEFAULT_SETUP };
-    state.cash = [];
-    state.stat = { type: '1-VAR', data: [], row: 0, col: 0 };
-    switchMode(state, 'COMP');
-    state.message = 'Clear All!';
-  } else if (action === 'esc' || action === 'ac') {
-    state.screen = state.prevScreen;
+    const { run, done } = state.confirm;
+    run();
+    state.message = done;
+  }
+  if (['exe', 'esc', 'ac'].includes(action)) {
+    state.screen = state.mode === 'STAT' ? 'statEditor' : 'main';
+    state.stack = [];
+    state.edit = null;
+  }
+}
+
+function varsKey(state, action) {
+  switch (action) {
+    case 'up':
+    case 'down':
+      state.varsCursor = Math.max(0, Math.min(MEMORY_VARS.length, state.varsCursor + (action === 'up' ? -1 : 1)));
+      scrollTo(state, 'varsTop', state.varsCursor);
+      return;
+    case 'esc':
+    case 'ac':
+      back(state);
   }
 }
 
 // ---------- CASH data editor ----------
-// The row after the last flow appends a new one.
 function cashKey(state, action) {
   if (action.startsWith('ins:')) {
-    state.input ??= [];
-    pushToken(state.input, action.slice(4));
+    state.edit ??= { tokens: [], pos: 0 };
+    insertToken(state, state.edit, action.slice(4));
     return;
   }
   switch (action) {
     case 'exe':
-      if (state.input) {
-        try {
-          const v = evaluate(state.input, state.vars);
-          state.cash[state.cashRow] = v;
-          state.input = null;
-          state.solved = [];
-          moveCash(state, 1);
-        } catch (e) {
-          fail(state, e);
-        }
-      } else moveCash(state, 1);
+      if (!state.edit) return moveCash(state, 1);
+      try {
+        state.cash[state.cashRow] = evaluate(state.edit.tokens, ctx(state));
+        state.edit = null;
+        state.solved = [];
+        moveCash(state, 1);
+      } catch (e) {
+        fail(state, e);
+      }
       return;
     case 'del':
-      if (state.input) state.input.pop();
+      if (state.edit) deleteToken(state.edit);
       else if (state.cashRow < state.cash.length) {
         state.cash.splice(state.cashRow, 1);
         state.solved = [];
       }
       return;
+    case 'left':
+    case 'right':
+      if (state.edit) moveInEdit(state.edit, action === 'left' ? -1 : 1);
+      return;
     case 'ac':
-      state.input = null;
+      state.edit = null;
       return;
     case 'esc':
-      if (state.input) state.input = null;
-      else state.screen = 'main';
+      if (state.edit) state.edit = null;
+      else back(state);
       return;
     case 'up':
     case 'down':
-      state.input = null;
+      state.edit = null;
       moveCash(state, action === 'up' ? -1 : 1);
-      return;
   }
 }
 
@@ -504,232 +906,262 @@ function moveCash(state, d) {
 }
 
 // ---------- STAT ----------
-function statTypeKey(state, action) {
-  const st = state.stat;
-  state.statTypeCursor ??= STAT_TYPES.indexOf(st.type);
-  const choose = (idx) => {
-    st.type = STAT_TYPES[idx];
-    st.row = 0;
-    st.col = 0;
-    state.statTop = 0;
-    state.screen = 'statEditor';
-  };
-  switch (action) {
-    case 'up':
-    case 'down':
-      state.statTypeCursor = action === 'up' ? 0 : 1;
-      return;
-    case 'ins:1':
-      return choose(0);
-    case 'ins:2':
-      return choose(1);
-    case 'exe':
-      return choose(state.statTypeCursor);
-  }
-}
-
-const statCols = (st) => (st.type === '1-VAR' ? ['x'] : ['x', 'y']);
+export const statCols = (state) => [
+  'x',
+  ...(state.stat.type === '1-VAR' ? [] : ['y']),
+  ...(state.setup.statFreq === 'On' ? ['f'] : []),
+];
 
 function statEditorKey(state, action) {
   const st = state.stat;
-  const cols = statCols(st);
+  const cols = statCols(state);
+  st.col = Math.min(st.col, cols.length - 1);
   if (action.startsWith('ins:')) {
-    state.input ??= [];
-    pushToken(state.input, action.slice(4));
+    state.edit ??= { tokens: [], pos: 0 };
+    insertToken(state, state.edit, action.slice(4));
     return;
   }
   const move = (d) => {
     st.row = Math.max(0, Math.min(st.data.length, st.row + d));
-    scrollTo(state, 'statTop', st.row, H - 1);
+    scrollTo(st, 'top', st.row, H - 1);
   };
   switch (action) {
     case 'exe':
-      if (!state.input) return move(1);
+      if (!state.edit) return move(1);
       try {
-        const v = evaluate(state.input, state.vars);
-        if (st.row === st.data.length) st.data.push({ x: 0, y: 0 });
+        const v = evaluate(state.edit.tokens, ctx(state));
+        if (st.row === st.data.length) st.data.push({ x: 0, y: 0, f: 1 });
         st.data[st.row][cols[st.col]] = v;
-        state.input = null;
-        if (st.col === cols.length - 1) {
-          st.col = 0;
-          move(1);
-        } else st.col++;
+        state.edit = null;
+        move(1);
       } catch (e) {
         fail(state, e);
       }
       return;
     case 'del':
-      if (state.input) state.input.pop();
+      if (state.edit) deleteToken(state.edit);
       else if (st.row < st.data.length) st.data.splice(st.row, 1);
       return;
     case 'ac':
-      state.input = null;
+      // AC leaves the editor for the calculation screen, as on the real unit.
+      if (state.edit) state.edit = null;
+      else {
+        state.screen = 'statCalc';
+        state.comp.edit = { tokens: [], pos: 0 };
+        state.comp.resultShown = false;
+      }
       return;
     case 'esc':
-      if (state.input) state.input = null;
-      else {
-        state.screen = 'statType';
-        state.statTypeCursor = STAT_TYPES.indexOf(st.type);
-      }
+      state.edit = null;
       return;
     case 'up':
     case 'down':
-      state.input = null;
+      state.edit = null;
       return move(action === 'up' ? -1 : 1);
     case 'left':
     case 'right':
-      state.input = null;
+      if (state.edit) return moveInEdit(state.edit, action === 'left' ? -1 : 1);
       st.col = Math.max(0, Math.min(cols.length - 1, st.col + (action === 'left' ? -1 : 1)));
-      return;
-    case 'solve':
-      state.input = null;
-      try {
-        state.statResults = F.statistics(st.data, st.type !== '1-VAR');
-        state.resultCursor = 0;
-        state.resultTop = 0;
-        state.screen = 'statResults';
-      } catch (e) {
-        fail(state, e);
-      }
-      return;
   }
 }
 
-function statResultsKey(state, action) {
-  const keys = Object.keys(state.statResults);
-  switch (action) {
-    case 'up':
-    case 'down':
-      state.resultCursor = Math.max(0, Math.min(keys.length - 1, state.resultCursor + (action === 'up' ? -1 : 1)));
-      scrollTo(state, 'resultTop', state.resultCursor);
-      return;
-    case 'exe': {
-      const v = state.statResults[keys[state.resultCursor]];
-      if (Number.isFinite(v)) state.vars.Ans = v;
-      return;
-    }
-    case 'esc':
-    case 'ac':
-      state.screen = 'statEditor';
-      return;
-  }
+function openStatMenu(state) {
+  const st = state.stat;
+  const paired = st.type !== '1-VAR';
+  const quad = st.type === '_+CX²';
+  const insertAll = (tokens) => () => {
+    state.screen = 'statCalc';
+    state.stack = [];
+    for (const t of tokens) runAction(state, `ins:${t}`);
+  };
+  const sub = (entries) => () => {
+    openMenu(state, entries.map(([text, token], i) => ({ text: `${i + 1}:${text}`, run: insertAll([token]) })), null);
+  };
+  const items = [
+    { text: '1:Type', run: () => switchMode(state, 'STAT') },
+    {
+      text: '2:Data',
+      run: () => {
+        state.screen = 'statEditor';
+        state.stack = [];
+      },
+    },
+    {
+      text: '3:Edit',
+      run: () => openMenu(state, [
+        {
+          text: '1:Ins',
+          run: () => {
+            st.data.splice(st.row, 0, { x: 0, y: 0, f: 1 });
+            state.screen = 'statEditor';
+            state.stack = [];
+          },
+        },
+        {
+          text: '2:Del-A',
+          run: () => confirm(state, 'Delete All?', () => { st.data = []; st.row = 0; }, 'Deleted'),
+        },
+      ], null),
+    },
+    {
+      text: '4:Sum',
+      run: sub(paired
+        ? [['Σx²', 'Σx²'], ['Σx', 'Σx'], ['Σy²', 'Σy²'], ['Σy', 'Σy'], ['Σxy', 'Σxy'], ['Σx³', 'Σx³'], ['Σx²y', 'Σx²y'], ['Σx⁴', 'Σx⁴']]
+        : [['Σx²', 'Σx²'], ['Σx', 'Σx']]),
+    },
+    {
+      text: '5:Var',
+      run: sub([
+        ['n', 'statN'], ['x̄', 'x̄'], ['xσn', 'xσn'], ['xσn-1', 'xσn-1'],
+        ...(paired ? [['ȳ', 'ȳ'], ['yσn', 'yσn'], ['yσn-1', 'yσn-1']] : []),
+      ]),
+    },
+    ...(paired
+      ? [{
+          text: '6:Reg',
+          run: sub(quad
+            ? [['A', 'regA'], ['B', 'regB'], ['C', 'regC'], ['x̂₁', 'xhat1'], ['x̂₂', 'xhat2'], ['ŷ', 'yhat']]
+            : [['A', 'regA'], ['B', 'regB'], ['r', 'regR'], ['x̂', 'xhat'], ['ŷ', 'yhat']]),
+        }]
+      : []),
+    {
+      text: `${paired ? 7 : 6}:MinMax`,
+      run: sub([['minX', 'minX'], ['maxX', 'maxX'], ...(paired ? [['minY', 'minY'], ['maxY', 'maxY']] : [])]),
+    },
+  ];
+  openMenu(state, items, null);
 }
 
 // ---------- rendering ----------
-// Visible width, ignoring combining marks (x̄ is "x" + U+0304).
-const vlen = (s) => [...s.replace(/[̀-ͯ]/g, '')].length;
-const padL = (s, w) => ' '.repeat(Math.max(0, w - vlen(s))) + s;
-const padR = (s, w) => s + ' '.repeat(Math.max(0, w - vlen(s)));
-
-const settingText = (setup, key) => {
-  const v = setup[key];
-  if (key === 'fix') return v === null ? 'Norm' : `Fix${v}`;
-  return String(v);
-};
-
 function valueText(state, item, width) {
   const v = state.vars[item.k];
-  if (item.date) return F.formatDate(v, state.setup.dateMode);
-  return fitNumber(v, width, state.setup.fix);
+  if (item.date) return F.formatDate(v);
+  return fitNumber(v, width, dispOf(state.setup), state.setup.sep === 'On');
 }
 
-// Line showing `prefix` followed by the input being typed, with a cursor.
-function inputLine(prefix, tokens) {
-  const text = tokens.join('');
-  const avail = W - vlen(prefix) - 1;
-  const shown = [...text].slice(-avail).join('');
-  return { text: prefix + shown, cursor: vlen(prefix) + vlen(shown) };
+// One line showing `prefix` followed by an input being edited, scrolled so
+// the cursor stays visible.
+function inputLine(prefix, edit) {
+  const before = chars(tokensText(edit.tokens.slice(0, edit.pos)));
+  const after = chars(tokensText(edit.tokens.slice(edit.pos)));
+  const all = [...before, ...after];
+  const room = W - len(prefix);
+  const start = Math.max(0, before.length - room + 1);
+  const shown = all.slice(start, start + room).join('');
+  return { text: prefix + shown, cursor: len(prefix) + before.length - start };
 }
 
 export function render(state) {
-  const view = { off: state.off, lines: ['', '', '', ''], highlight: null, cursor: null, error: null };
+  const view = {
+    off: state.off,
+    lines: ['', '', '', ''],
+    highlight: null,
+    cursor: null,
+    overwrite: state.overwrite,
+    error: null,
+    contrast: Number(state.setup.contrast),
+  };
   if (state.off) return view;
+  const s = state.setup;
   view.indicators = {
     S: state.shift,
     A: state.alpha,
     M: state.vars.M !== 0,
     STO: state.pending === 'STO',
     RCL: state.pending === 'RCL',
-    BGN: state.setup.payment === 'Begin',
-    FIX: state.setup.fix !== null,
+    STAT: s.statFreq === 'On',
+    360: s.dateMode === '360',
+    SI: s.odd === 'SI',
+    DMY: s.dateInput === 'DMY',
+    D: s.angle === 'Deg',
+    R: s.angle === 'Rad',
+    G: s.angle === 'Gra',
+    FIX: s.display.startsWith('Fix'),
+    SCI: s.display.startsWith('Sci'),
     up: false,
     down: false,
-    mode: state.mode,
+    Disp: state.disp && state.screen === 'main',
   };
 
   if (state.error) {
     view.error = state.error;
-    view.lines = [state.error, '', '[AC] :Cancel', '[◀][▶]:Goto'];
-    return view;
+    view.lines = [state.error, '[AC] :Cancel', '[◀][▶]:Goto', ''];
+  } else if (state.message) {
+    view.lines = ['', state.message, '', ''];
+  } else {
+    const renderers = {
+      main: state.mode === 'COMP' ? renderCalc : renderList,
+      setup: renderSetup,
+      menu: renderMenu,
+      confirm: () => {
+        view.lines = [state.confirm.text, '', '[EXE] :Yes', '[ESC] :Cancel'];
+      },
+      vars: renderVars,
+      cashEditor: renderCash,
+      statEditor: renderStatEditor,
+      statCalc: renderCalc,
+    };
+    renderers[state.screen](state, view);
   }
-  if (state.message) {
-    view.lines = ['', state.message, '', ''].map((l) => padR(l, W));
-    return view;
-  }
-
-  const renderers = {
-    main: state.mode === 'COMP' ? renderComp : renderList,
-    setup: renderSetup,
-    clr: () => {
-      view.lines = ['Clear All?', '', '[EXE] :Yes', '[ESC] :Cancel'];
-    },
-    cashEditor: renderCash,
-    statType: renderStatType,
-    statEditor: renderStatEditor,
-    statResults: renderStatResults,
-  };
-  renderers[state.screen](state, view);
   view.lines = view.lines.map((l) => padR(l, W));
   return view;
 }
 
-function scrolledList(view, count, top, lineFor) {
-  for (let r = 0; r < H; r++) {
+function scrolledList(view, count, top, lineFor, firstLine = 0) {
+  const visible = H - firstLine;
+  for (let r = 0; r < visible; r++) {
     const idx = top + r;
     if (idx >= count) break;
     const { text, cursor, highlight } = lineFor(idx);
-    view.lines[r] = text;
-    if (cursor !== undefined) view.cursor = { line: r, col: cursor };
-    if (highlight) view.highlight = { line: r, from: 0, to: W };
+    view.lines[firstLine + r] = text;
+    if (cursor !== undefined) view.cursor = { line: firstLine + r, col: cursor };
+    if (highlight) view.highlight = { line: firstLine + r, from: 0, to: W };
   }
   view.indicators.up = top > 0;
-  view.indicators.down = top + H < count;
+  view.indicators.down = top + visible < count;
 }
 
-function renderComp(state, view) {
+function renderCalc(state, view) {
   const c = state.comp;
-  const text = c.tokens.join('');
-  const chars = [...text];
+  const before = chars(tokensText(c.edit.tokens.slice(0, c.edit.pos)));
+  const all = [...before, ...chars(tokensText(c.edit.tokens.slice(c.edit.pos)))];
   if (c.resultShown) {
-    for (let r = 0; r < 3; r++) view.lines[r] = chars.slice(r * W, (r + 1) * W).join('');
-    view.lines[3] = padL(fitNumber(state.vars.Ans, W, state.setup.fix), W);
+    for (let r = 0; r < 3; r++) view.lines[r] = all.slice(r * W, (r + 1) * W).join('');
+    view.lines[3] = padL(fitNumber(state.vars.Ans, W, dispOf(state.setup), state.setup.sep === 'On'), W);
     return;
   }
-  // Editing: keep the cursor visible, scrolling by whole lines.
-  const total = chars.length + 1;
-  const firstLine = Math.max(0, Math.ceil(total / W) - 3);
+  // Editing: scroll by whole lines so the cursor stays visible.
+  const cursorLine = Math.floor(before.length / W);
+  const firstLine = Math.max(0, cursorLine - 2);
   for (let r = 0; r < 3; r++) {
     const start = (firstLine + r) * W;
-    view.lines[r] = chars.slice(start, start + W).join('');
+    view.lines[r] = all.slice(start, start + W).join('');
   }
-  const pos = chars.length - firstLine * W;
-  view.cursor = { line: Math.floor(pos / W), col: pos % W };
+  view.cursor = { line: cursorLine - firstLine, col: before.length % W };
+  view.indicators.up = firstLine > 0;
+  view.indicators.down = all.length > (firstLine + 3) * W;
 }
 
 function renderList(state, view) {
-  const items = MODES[state.mode];
-  scrolledList(view, items.length, state.top, (idx) => {
-    const item = items[idx];
-    const selected = idx === state.cursor;
-    const label = item.label ?? item.k;
-    if (item.type === 'set') return { text: `Set:${settingText(state.setup, item.setting)}`, highlight: selected };
+  const items = itemsFor(state);
+  const visible = items.filter((it) => it.type !== 'res' || state.solved.includes(it.k));
+  const pos = (idx) => visible.indexOf(items[idx]);
+  // Translate cursor/top from item indexes to visible-row indexes.
+  const cur = pos(state.cursor);
+  const view0 = { top: Math.min(state.top, Math.max(0, visible.length - 1)) };
+  scrollTo(view0, 'top', cur);
+  state.top = view0.top;
+  scrolledList(view, visible.length, view0.top, (idx) => {
+    const item = visible[idx];
+    const selected = idx === cur;
+    if (item.type === 'set') return { text: `Set:${state.setup[item.setting]}`, highlight: selected };
     if (item.type === 'editor') return { text: 'Csh=D.Editor x', highlight: selected };
-    if (selected && state.input) return inputLine(`${label}=`, state.input);
+    if (selected && state.edit) return inputLine(`${item.label}=`, state.edit);
     if (item.type === 'out' && !state.solved.includes(item.k)) {
-      return { text: `${label}:Solve`, highlight: selected };
+      return { text: `${item.label}:Solve`, highlight: selected };
     }
-    const prefix = `${label}=`;
-    const w = W - vlen(prefix);
+    const prefix = `${item.label}=`;
+    const w = W - len(prefix);
     return { text: prefix + padL(valueText(state, item, w), w), highlight: selected };
   });
 }
@@ -738,8 +1170,27 @@ function renderSetup(state, view) {
   scrolledList(view, SETUP_ITEMS.length, state.setupTop, (idx) => {
     const item = SETUP_ITEMS[idx];
     return {
-      text: `${padR(item.label, 10)}:${settingText(state.setup, item.key)}`,
+      text: `${item.label}:${state.setup[item.key]}`,
       highlight: idx === state.setupCursor,
+    };
+  });
+}
+
+function renderMenu(state, view) {
+  const m = state.menu;
+  const first = m.title ? 1 : 0;
+  if (m.title) view.lines[0] = m.title;
+  scrolledList(view, m.items.length, m.top, (idx) => ({ text: m.items[idx].text, highlight: idx === m.cursor }), first);
+}
+
+function renderVars(state, view) {
+  const names = [...MEMORY_VARS, 'Ans'];
+  scrolledList(view, names.length, state.varsTop, (idx) => {
+    const prefix = `${names[idx]}=`;
+    const w = W - len(prefix);
+    return {
+      text: prefix + padL(fitNumber(state.vars[names[idx]], w, dispOf(state.setup)), w),
+      highlight: idx === state.varsCursor,
     };
   });
 }
@@ -749,55 +1200,45 @@ function renderCash(state, view) {
   scrolledList(view, rows, state.cashTop, (idx) => {
     const prefix = `CF${idx}=`;
     const selected = idx === state.cashRow;
-    if (selected && state.input) return inputLine(prefix, state.input);
-    const w = W - vlen(prefix);
-    const v = idx < state.cash.length ? fitNumber(state.cash[idx], w, state.setup.fix) : '';
+    if (selected && state.edit) return inputLine(prefix, state.edit);
+    const w = W - len(prefix);
+    const v = idx < state.cash.length ? fitNumber(state.cash[idx], w, dispOf(state.setup)) : '';
     return { text: prefix + padL(v, w), highlight: selected };
   });
 }
 
-function renderStatType(state, view) {
-  const cur = state.statTypeCursor ?? STAT_TYPES.indexOf(state.stat.type);
-  view.lines = ['Select Type', '1:1-VAR', '2:A+BX', ''];
-  view.highlight = { line: cur + 1, from: 0, to: W };
-}
+const CELL_WIDTHS = { 1: [13], 2: [6, 6], 3: [4, 4, 4] };
 
 function renderStatEditor(state, view) {
   const st = state.stat;
-  const cols = statCols(st);
-  const cellW = cols.length === 1 ? 13 : 6;
-  view.lines[0] = cols.length === 1 ? `   ${padL('X', cellW)}` : `   ${padL('X', cellW)} ${padL('Y', cellW)}`;
-  const top = state.statTop ?? 0;
+  const cols = statCols(state);
+  const widths = CELL_WIDTHS[cols.length];
+  const lead = cols.length < 3 ? ' ' : '';
+  const header = { x: 'X', y: 'Y', f: 'FREQ' };
+  view.lines[0] = '  ' + lead + cols.map((c, i) => padL(header[c], widths[i])).join(' ');
+  const top = st.top ?? 0;
   for (let r = 0; r < H - 1; r++) {
     const idx = top + r;
     if (idx > st.data.length) break;
-    let line = padL(String(idx + 1), 2) + ' ';
+    let line = padL(String(idx + 1).slice(-2), 2) + lead;
     cols.forEach((col, c) => {
-      const start = vlen(line);
-      let cell;
-      if (idx === st.row && c === st.col && state.input) {
-        const text = [...state.input.join('')].slice(-(cellW - 1)).join('');
-        cell = padR(text, cellW);
-        view.cursor = { line: r + 1, col: start + vlen(text) };
+      if (c > 0) line += ' ';
+      const start = len(line);
+      const w = widths[c];
+      if (idx === st.row && c === st.col && state.edit) {
+        const before = chars(tokensText(state.edit.tokens.slice(0, state.edit.pos)));
+        const all = [...before, ...chars(tokensText(state.edit.tokens.slice(state.edit.pos)))];
+        const from = Math.max(0, before.length - w + 1);
+        line += padR(all.slice(from, from + w).join(''), w);
+        view.cursor = { line: r + 1, col: start + before.length - from };
       } else {
         const v = st.data[idx]?.[col];
-        cell = padL(v === undefined ? '' : fitNumber(v, cellW, state.setup.fix), cellW);
-        if (idx === st.row && c === st.col) view.highlight = { line: r + 1, from: start, to: start + cellW };
+        line += padL(v === undefined ? '' : fitNumber(v, w, dispOf(state.setup)), w);
+        if (idx === st.row && c === st.col) view.highlight = { line: r + 1, from: start, to: start + w };
       }
-      line += cell + (c < cols.length - 1 ? ' ' : '');
     });
     view.lines[r + 1] = line;
   }
   view.indicators.up = top > 0;
   view.indicators.down = top + H - 1 < st.data.length + 1;
-}
-
-function renderStatResults(state, view) {
-  const res = state.statResults;
-  const keys = Object.keys(res);
-  scrolledList(view, keys.length, state.resultTop, (idx) => {
-    const prefix = `${keys[idx]}=`;
-    const w = W - vlen(prefix);
-    return { text: prefix + padL(fitNumber(res[keys[idx]], w, state.setup.fix), w), highlight: idx === state.resultCursor };
-  });
 }
