@@ -96,18 +96,17 @@ export function annualRate(i, PY, CY) {
   return CY * ((1 + i) ** (PY / CY) - 1) * 100;
 }
 
-// Growth factors for n periods. A fractional n is an "odd period": its
-// fraction earns compound (CI) or simple (SI) interest per the dn setting.
+// Growth factors for n periods. A fractional n is an "odd period" that comes
+// before the whole payment periods: it earns compound (CI) or simple (SI)
+// interest per the dn setting, and payments run over the whole periods only.
 function growth(i, n, odd) {
   const whole = Math.trunc(n);
   const frac = n - whole;
-  if (odd === 'SI' && frac !== 0) {
-    return { gamma: 1 + i * frac, g: (1 + i) ** whole };
-  }
-  return { gamma: 1, g: (1 + i) ** n };
+  const gamma = odd === 'SI' ? 1 + i * frac : (1 + i) ** frac;
+  return { gamma, g: (1 + i) ** whole };
 }
 
-// Residual of PV·γ·(1+i)^n + PMT·(1+i·S)·((1+i)^n − 1)/i + FV = 0.
+// Residual of PV·γ·(1+i)^m + PMT·(1+i·S)·((1+i)^m − 1)/i + FV = 0, m = Intg(n).
 export function tvmResidual(i, { n, PV, PMT, FV, begin, odd }) {
   if (Math.abs(i) < 1e-12) return PV + PMT * n + FV;
   const { gamma, g } = growth(i, n, odd);
@@ -145,12 +144,42 @@ export function solveTVM(target, v) {
       if (annuity === 0) throw mathError();
       return finite(-(PV * gamma * g + FV) / annuity);
     case 'n': {
+      const residual = (t) => tvmResidual(i, { ...v, n: t });
       const c = (PMT * (1 + i * S)) / i;
       const x = (c - FV) / (PV + c);
-      if (!(x > 0)) throw mathError();
-      const nCI = Math.log(x) / Math.log(1 + i);
-      if (odd !== 'SI' || Number.isInteger(nCI)) return finite(nCI);
-      return solveFor((t) => tvmResidual(i, { ...v, n: t }), nCI);
+      const guess = Math.log(x) / Math.log(1 + i);
+      if (Number.isInteger(guess)) return guess;
+      // With an odd period the relation is no longer a pure power of (1+i);
+      // refine so that solving FV back from this n gives the same FV.
+      if (Number.isFinite(guess) && guess > 0) {
+        try {
+          return solveFor(residual, guess);
+        } catch {
+          return guess;
+        }
+      }
+      return oddPeriodN(residual, PMT !== 0);
+    }
+  }
+  throw mathError();
+}
+
+// Finds n segment by segment: within [w, w+1) the payment count is fixed, so
+// the residual is continuous there. With a PMT, prefer an n that includes
+// at least one payment over the payment-free n < 1.
+function oddPeriodN(residual, hasPayments) {
+  const segments = [];
+  for (let w = 1; w < 10000; w++) segments.push(w);
+  if (hasPayments) segments.push(0);
+  else segments.unshift(0);
+  for (const w of segments) {
+    const a = w;
+    const b = w + 1 - 1e-12;
+    const fa = residual(a);
+    const fb = residual(b);
+    if (fa === 0) return a;
+    if (Number.isFinite(fa) && Number.isFinite(fb) && Math.sign(fa) !== Math.sign(fb)) {
+      return bisect(residual, a, b, fa);
     }
   }
   throw mathError();
@@ -454,7 +483,9 @@ export function statistics(data, type) {
   const sx = S((r) => r.x);
   const sx2 = S((r) => r.x * r.x);
   const mean = sx / n;
-  const varX = Math.max(0, sx2 / n - mean * mean);
+  // Deviations from the mean, not Σx²/n − x̄², which loses every digit for
+  // large values that are close together.
+  const varX = S((r) => (r.x - mean) ** 2) / n;
   const out = {
     statN: n,
     'x̄': mean,
@@ -470,7 +501,7 @@ export function statistics(data, type) {
   const sy = S((r) => r.y);
   const sy2 = S((r) => r.y * r.y);
   const my = sy / n;
-  const varY = Math.max(0, sy2 / n - my * my);
+  const varY = S((r) => (r.y - my) ** 2) / n;
   Object.assign(out, {
     'ȳ': my,
     'Σy': sy,
@@ -486,29 +517,30 @@ export function statistics(data, type) {
   });
 
   if (type === '_+CX²') {
-    // Least squares for y = A + Bx + Cx².
-    const Sxx = out['Σx²'] - (sx * sx) / n;
-    const Sxy = out['Σxy'] - (sx * sy) / n;
-    const Sxx2 = out['Σx³'] - (sx * out['Σx²']) / n;
-    const Sx2x2 = out['Σx⁴'] - (out['Σx²'] ** 2) / n;
-    const Sx2y = out['Σx²y'] - (out['Σx²'] * sy) / n;
+    // Least squares for y = A + Bx + Cx², on centred sums.
+    const m2 = out['Σx²'] / n;
+    const Sxx = S((r) => (r.x - mean) ** 2);
+    const Sxy = S((r) => (r.x - mean) * (r.y - my));
+    const Sxx2 = S((r) => (r.x - mean) * (r.x * r.x - m2));
+    const Sx2x2 = S((r) => (r.x * r.x - m2) ** 2);
+    const Sx2y = S((r) => (r.x * r.x - m2) * (r.y - my));
     const det = Sxx * Sx2x2 - Sxx2 * Sxx2;
     const B = (Sxy * Sx2x2 - Sx2y * Sxx2) / det;
     const C = (Sx2y * Sxx - Sxy * Sxx2) / det;
-    const A = my - B * mean - C * (out['Σx²'] / n);
+    const A = my - B * mean - C * m2;
     return Object.assign(out, { regA: A, regB: B, regC: C });
   }
 
   const [fu, fw] = LINEARIZE[type];
   const pts = rows.map((r) => ({ u: fu(r.x), w: fw(r.y), f: r.f ?? 1 }));
   const T = (fn) => pts.reduce((s, p) => s + p.f * fn(p), 0);
-  const su = T((p) => p.u);
-  const sw = T((p) => p.w);
-  const Suu = T((p) => p.u * p.u) - (su * su) / n;
-  const Sww = T((p) => p.w * p.w) - (sw * sw) / n;
-  const Suw = T((p) => p.u * p.w) - (su * sw) / n;
+  const mu = T((p) => p.u) / n;
+  const mw = T((p) => p.w) / n;
+  const Suu = T((p) => (p.u - mu) ** 2);
+  const Sww = T((p) => (p.w - mw) ** 2);
+  const Suw = T((p) => (p.u - mu) * (p.w - mw));
   const b = Suu === 0 ? NaN : Suw / Suu;
-  const a = sw / n - b * (su / n);
+  const a = mw - b * mu;
   const r = Suu === 0 || Sww === 0 ? NaN : Suw / Math.sqrt(Suu * Sww);
   let A = a;
   let B = b;

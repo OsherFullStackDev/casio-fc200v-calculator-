@@ -176,3 +176,15 @@ test('CLR resets memory; SETUP Fix; power off/on', () => {
   keys(s, '5 on');
   assert.ok(!render(s).off);
 });
+
+test('SETUP choices are numbered like the real unit', () => {
+  const s = createState();
+  keys(s, 'setup exe 1'); // Payment → 1:Begin
+  assert.equal(s.setup.payment, 'Begin');
+  assert.equal(s.screen, 'setup');
+  keys(s, 'down down down down down down down down down exe 1 2 esc'); // Display → Fix → 2
+  assert.equal(s.setup.display, 'Fix2');
+  keys(s, 'cmpd exe 2'); // Set row → 2:End
+  assert.equal(s.setup.payment, 'End');
+  assert.equal(s.screen, 'main');
+});

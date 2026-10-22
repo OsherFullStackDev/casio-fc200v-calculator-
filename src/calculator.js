@@ -651,7 +651,7 @@ function listKey(state, action) {
           fail(state, e);
         }
       } else if (item.type === 'set') {
-        cycleSetting(state, SETUP_ITEMS.find((x) => x.key === item.setting), 1);
+        openOptions(state, SETUP_ITEMS.find((x) => x.key === item.setting));
       } else if (item.type === 'editor') {
         openScreen(state, 'cashEditor');
         state.cashRow = 0;
@@ -772,7 +772,10 @@ function solveBevn(state, key) {
 function cycleSetting(state, item, dir) {
   const opts = item.options;
   const idx = opts.indexOf(state.setup[item.key]);
-  const next = opts[(Math.max(0, idx) + dir + opts.length) % opts.length];
+  applySetting(state, item, opts[(Math.max(0, idx) + dir + opts.length) % opts.length]);
+}
+
+function applySetting(state, item, next) {
   if (item.key === 'dateInput') {
     // Keep stored dates meaning the same day after the order changes.
     for (const d of ['d1', 'd2', 'bd1', 'bd2']) {
@@ -797,6 +800,8 @@ function setupKey(state, action) {
       scrollTo(state, 'setupTop', state.setupCursor);
       return;
     case 'exe':
+      openOptions(state, item);
+      return;
     case 'right':
       cycleSetting(state, item, 1);
       return;
@@ -809,6 +814,40 @@ function setupKey(state, action) {
   }
 }
 
+// The numbered choice list the real unit shows for a setting, e.g.
+// "1:Begin 2:End". Display asks Fix/Sci/Norm first, then the digit count.
+function openOptions(state, item) {
+  if (item.key === 'contrast') return; // adjusted with ◀▶ only
+  const origin = state.screen;
+  const depth = state.stack.length;
+  const done = (value) => () => {
+    applySetting(state, item, value);
+    state.stack.length = depth;
+    state.screen = origin;
+  };
+  if (item.key === 'display') {
+    const digits = (type, from, to) => () =>
+      openMenu(
+        state,
+        Array.from({ length: to - from + 1 }, (_, i) => ({
+          text: `${from + i}`,
+          digit: from + i,
+          run: done(`${type}${from + i}`),
+        })),
+        `${type} ${from}~${to}?`,
+      );
+    openMenu(state, [
+      { text: '1:Fix', run: digits('Fix', 0, 9) },
+      { text: '2:Sci', run: digits('Sci', 0, 9) },
+      { text: '3:Norm', run: digits('Norm', 1, 2) },
+    ], null);
+    return;
+  }
+  const order = item.key === 'payment' ? ['Begin', 'End'] : item.options;
+  openMenu(state, order.map((opt, i) => ({ text: `${i + 1}:${opt}`, run: done(opt) })), null);
+  state.menu.cursor = Math.max(0, order.indexOf(state.setup[item.key]));
+}
+
 // ---------- menus ----------
 function menuKey(state, action) {
   const m = state.menu;
@@ -818,7 +857,12 @@ function menuKey(state, action) {
     if (m.insertBack) back(state);
     item.run();
   };
-  if (/^ins:[1-9]$/.test(action)) return choose(Number(action.slice(4)) - 1);
+  if (/^ins:[0-9]$/.test(action)) {
+    const d = Number(action.slice(4));
+    // Digit menus (Fix 0~9) pick by value, the rest by position.
+    const byDigit = m.items.findIndex((it) => it.digit === d);
+    return choose(m.items.some((it) => it.digit !== undefined) ? byDigit : d - 1);
+  }
   switch (action) {
     case 'up':
     case 'down': {

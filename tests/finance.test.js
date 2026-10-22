@@ -31,6 +31,15 @@ test('CMPD odd period: simple interest on the fraction', () => {
   near(F.solveTVM('n', { ...v, odd: 'SI', FV: 1270.5 }), 2.5, 1e-6);
 });
 
+test('CMPD odd period: payments only over the whole periods', () => {
+  const v = { n: 1.5, iPct: 10, PV: -1000, PMT: 100, FV: 0, PY: 1, CY: 1, begin: false, odd: 'CI' };
+  const fv = F.solveTVM('FV', v);
+  near(fv, 1000 * 1.1 ** 1.5 - 100, 1e-9); // 1053.689733
+  // Solving n back from that FV lands on the same n.
+  near(F.solveTVM('n', { ...v, FV: fv }), 1.5, 1e-9);
+  near(F.solveTVM('I%', { ...v, FV: fv }), 10, 1e-7);
+});
+
 test('SMPL simple interest', () => {
   const r = F.simpleInterest({ Dys: 120, iPct: 7, PV: 10000, dn: 365 });
   near(r.SI, -230.1369863, 1e-7);
@@ -81,6 +90,7 @@ test('DEPR: four methods, year 1 and the full schedule', () => {
   near(F.depreciation('DB', { ...base, iPct: 200 }).dep, 500000);
   // SYD with a partial first year (YR1=6): the last year gets the remaining 1/30.
   near(F.depreciation('SYD', { n: 5, iPct: 0, PV: 1000, FV: 0, j: 6, YR1: 6 }).dep, 1000 / 30, 1e-9);
+  near(F.depreciation('SYD', { n: 3, iPct: 0, PV: 1200, FV: 0, j: 4, YR1: 6 }).dep, 100, 1e-9);
   // Partial first year: the whole cost is written off by year n+1.
   for (const m of ['SL', 'SYD', 'FP', 'DB']) {
     const r = F.depreciation(m, { n: 5, iPct: 30, PV: 10000, FV: 1000, j: 6, YR1: 4 });
@@ -120,6 +130,10 @@ test('STAT: one-variable, linear, quadratic, exponential', () => {
   near(one['x̄'], 2.5);
   near(one['xσn'], Math.sqrt(1.25));
   near(one['xσn-1'], Math.sqrt(5 / 3));
+  // Large values close together keep their spread.
+  const big = F.statistics([{ x: 1e9 }, { x: 1e9 + 1 }], '1-VAR');
+  near(big['xσn'], 0.5, 1e-9);
+  near(big['xσn-1'], Math.SQRT1_2, 1e-9);
   const freq = F.statistics([{ x: 1, f: 3 }, { x: 5, f: 1 }], '1-VAR');
   near(freq['x̄'], 2);
   const lin = F.statistics([{ x: 1, y: 3 }, { x: 2, y: 5 }, { x: 3, y: 7 }], 'A+BX');
