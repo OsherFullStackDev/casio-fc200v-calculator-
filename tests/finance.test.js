@@ -79,6 +79,8 @@ test('DEPR: four methods, year 1 and the full schedule', () => {
   near(F.depreciation('FP', { ...base, iPct: 25 }).dep, 375000);
   near(F.depreciation('SYD', { ...base, iPct: 0 }).dep, (6 / 21) * 1500000, 1e-6);
   near(F.depreciation('DB', { ...base, iPct: 200 }).dep, 500000);
+  // SYD with a partial first year (YR1=6): the last year gets the remaining 1/30.
+  near(F.depreciation('SYD', { n: 5, iPct: 0, PV: 1000, FV: 0, j: 6, YR1: 6 }).dep, 1000 / 30, 1e-9);
   // Partial first year: the whole cost is written off by year n+1.
   for (const m of ['SL', 'SYD', 'FP', 'DB']) {
     const r = F.depreciation(m, { n: 5, iPct: 30, PV: 10000, FV: 1000, j: 6, YR1: 4 });

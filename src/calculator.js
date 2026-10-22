@@ -710,8 +710,13 @@ export function compute(state, key) {
     case 'CMPD':
       return { [key]: F.solveTVM(key, tvm(state)) };
     case 'CASH': {
+      if (key === 'IRR') {
+        // Like the real unit, the IRR also becomes the current I%.
+        const rate = F.irr(state.cash);
+        return { IRR: rate, 'I%': rate };
+      }
       const fn = { NPV: F.npv, PBP: F.pbp, NFV: F.nfv }[key];
-      return { [key]: key === 'IRR' ? F.irr(state.cash) : fn(v['I%'], state.cash) };
+      return { [key]: fn(v['I%'], state.cash) };
     }
     case 'AMRT':
       return { [key]: F.amortize({ ...tvm(state), PM1: v.PM1, PM2: v.PM2 })[key] };

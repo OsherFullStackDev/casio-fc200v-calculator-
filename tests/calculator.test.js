@@ -110,6 +110,10 @@ test('CASH: edit flows and solve NPV / IRR', () => {
   assert.equal(s.vars.NPV.toFixed(5), '-21.03681');
   keys(s, 'down solve');
   assert.equal(s.vars.IRR.toFixed(3), '8.896');
+  // IRR is stored in I% too, so NPV at that rate is zero.
+  assert.equal(s.vars['I%'], s.vars.IRR);
+  keys(s, 'up solve');
+  assert.ok(Math.abs(s.vars.NPV) < 1e-9);
 });
 
 test('DAYS between two dates', () => {
