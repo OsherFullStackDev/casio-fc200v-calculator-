@@ -33,6 +33,8 @@ export const tokenText = (t) => TOKEN_TEXT[t] ?? t;
 export const tokensText = (tokens) => tokens.map(tokenText).join('');
 
 export const VARIABLES = ['A', 'B', 'C', 'D', 'X', 'Y', 'M'];
+// Financial calculation variables (VARS), usable in COMP expressions.
+export const FIN_VARS = ['n', 'I%', 'PV', 'PMT', 'FV', 'P/Y', 'C/Y', 'PM1', 'PM2', 'Dys'];
 
 // Statistics values that can be typed into an expression (from S-MENU).
 export const STAT_VALUES = [
@@ -198,7 +200,7 @@ export function evaluate(tokens, ctxOrVars = {}) {
     const v = t.value;
     return (
       v === '(' || v in FUNCS || v === 'Ans' || v === 'π' || v === 'e' ||
-      VARIABLES.includes(v) || STAT_VALUES.includes(v)
+      VARIABLES.includes(v) || FIN_VARS.includes(v) || STAT_VALUES.includes(v)
     );
   };
 
@@ -229,7 +231,7 @@ export function evaluate(tokens, ctxOrVars = {}) {
     }
     if (v === 'π') return Math.PI;
     if (v === 'e') return Math.E;
-    if (v === 'Ans' || VARIABLES.includes(v)) return vars[v] ?? 0;
+    if (v === 'Ans' || VARIABLES.includes(v) || FIN_VARS.includes(v)) return vars[v] ?? 0;
     if (STAT_VALUES.includes(v)) {
       if (!ctx.stat) throw syntaxError();
       return ctx.stat(v);
@@ -364,7 +366,8 @@ export function roundToDisplay(x, disp) {
 }
 
 // Like formatNumber, but drops precision until the text fits in `width`.
-export function fitNumber(x, width, disp = DEFAULT_DISP, separator = false) {
+// `separator` is the 3-digit separator character, or null for none.
+export function fitNumber(x, width, disp = DEFAULT_DISP, separator = null) {
   let s = withSeparator(formatNumber(x, disp), separator);
   for (let sig = 9; s.length > width && sig >= 1; sig--) {
     s = formatNumber(x, disp.type === 'Fix' ? DEFAULT_DISP : disp, sig);
@@ -372,10 +375,10 @@ export function fitNumber(x, width, disp = DEFAULT_DISP, separator = false) {
   return s.length > width ? s.slice(0, width) : s;
 }
 
-function withSeparator(s, on) {
-  if (!on || s.includes('E')) return s;
+function withSeparator(s, sep) {
+  if (!sep || s.includes('E')) return s;
   const [int, frac] = s.split('.');
-  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
   return frac === undefined ? grouped : `${grouped}.${frac}`;
 }
 

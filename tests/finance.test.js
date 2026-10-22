@@ -28,15 +28,14 @@ test('CMPD odd period: simple interest on the fraction', () => {
   const v = { n: 2.5, iPct: 10, PV: -1000, PMT: 0, FV: 0, PY: 1, CY: 1, begin: false };
   near(F.solveTVM('FV', { ...v, odd: 'CI' }), 1000 * 1.1 ** 2.5, 1e-6);
   near(F.solveTVM('FV', { ...v, odd: 'SI' }), 1000 * 1.05 * 1.21, 1e-6);
-  near(F.solveTVM('n', { ...v, odd: 'SI', FV: 1270.5 }), 2.5, 1e-6);
+  // n uses the manual's closed form, which ignores the odd-period split.
+  near(F.solveTVM('n', { ...v, odd: 'SI', FV: 1270.5 }), Math.log(1.2705) / Math.log(1.1), 1e-9);
 });
 
 test('CMPD odd period: payments only over the whole periods', () => {
   const v = { n: 1.5, iPct: 10, PV: -1000, PMT: 100, FV: 0, PY: 1, CY: 1, begin: false, odd: 'CI' };
   const fv = F.solveTVM('FV', v);
   near(fv, 1000 * 1.1 ** 1.5 - 100, 1e-9); // 1053.689733
-  // Solving n back from that FV lands on the same n.
-  near(F.solveTVM('n', { ...v, FV: fv }), 1.5, 1e-9);
   near(F.solveTVM('I%', { ...v, FV: fv }), 10, 1e-7);
 });
 
@@ -66,8 +65,8 @@ test('AMRT first payment and balance after a year', () => {
 test('CNVR and COST', () => {
   near(F.toEffective(12, 12), 12.68250301, 1e-8);
   near(F.toNominal(12, 12.68250301), 12, 1e-7);
-  near(F.solveCost('Sel', { Cst: 100, Mrg: 20 }), 125);
-  near(F.solveCost('Mrg', { Cst: 100, Sel: 125 }), 20);
+  near(F.solveCost('SEL', { CST: 100, MRG: 20 }), 125);
+  near(F.solveCost('MRG', { CST: 40, SEL: 100 }), 60); // manual E-61 example
 });
 
 test('DAYS', () => {
@@ -88,14 +87,34 @@ test('DEPR: four methods, year 1 and the full schedule', () => {
   near(F.depreciation('FP', { ...base, iPct: 25 }).dep, 375000);
   near(F.depreciation('SYD', { ...base, iPct: 0 }).dep, (6 / 21) * 1500000, 1e-6);
   near(F.depreciation('DB', { ...base, iPct: 200 }).dep, 500000);
-  // SYD with a partial first year (YR1=6): the last year gets the remaining 1/30.
-  near(F.depreciation('SYD', { n: 5, iPct: 0, PV: 1000, FV: 0, j: 6, YR1: 6 }).dep, 1000 / 30, 1e-9);
-  near(F.depreciation('SYD', { n: 3, iPct: 0, PV: 1200, FV: 0, j: 4, YR1: 6 }).dep, 100, 1e-9);
-  // Partial first year: the whole cost is written off by year n+1.
-  for (const m of ['SL', 'SYD', 'FP', 'DB']) {
+  // SYD year n+1 is scaled by (12−YR1)/12, as in the manual (E-70).
+  near(F.depreciation('SYD', { n: 5, iPct: 0, PV: 1000, FV: 0, j: 6, YR1: 6 }).dep, 1000 / 60, 1e-9);
+  near(F.depreciation('SYD', { n: 3, iPct: 0, PV: 1200, FV: 0, j: 4, YR1: 6 }).dep, 50, 1e-9);
+  // Partial first year: SL, FP and DB write off the whole cost by year n+1.
+  for (const m of ['SL', 'FP', 'DB']) {
     const r = F.depreciation(m, { n: 5, iPct: 30, PV: 10000, FV: 1000, j: 6, YR1: 4 });
     near(r.RDV, 0, 1e-6);
   }
+});
+
+test('manual worked examples', () => {
+  // BOND (E-73): d1 06/01/2022, d2 12/15/2024, RDV 100, CPN 3%, YLD 4%, annual.
+  const bond = {
+    dateMode: true, d1: { y: 2022, m: 6, d: 1 }, d2: { y: 2024, m: 12, d: 15 },
+    RDV: 100, CPN: 3, YLD: 4, M: 1, dn: 365,
+  };
+  near(F.bondPrice(bond).PRC, -97.6151555, 1e-7);
+  near(F.bondYield({ ...bond, PRC: -97.6151555 }), 4, 1e-6);
+  // DAYS (E-64): 11/05/2022 → 04/27/2023 = 173 days.
+  assert.equal(F.daysBetween({ y: 2022, m: 11, d: 5 }, { y: 2023, m: 4, d: 27 }, 365), 173);
+  // CMPD (E-45): n 48, I 4%, PV −1000, PMT −300, 12/12 → FV ≈ $16,760.
+  const fv = F.solveTVM('FV', { n: 48, iPct: 4, PV: -1000, PMT: -300, FV: 0, PY: 12, CY: 12, begin: false, odd: 'CI' });
+  assert.equal(Math.round(fv / 10) * 10, 16760);
+});
+
+test('CASH limits from the manual', () => {
+  assert.equal(F.pbp(10, [500, -100]), 0); // CF0 > 0
+  assert.throws(() => F.irr([-1000, 100]), /Math ERROR/); // IRR < −50%
 });
 
 test('BOND price and yield', () => {

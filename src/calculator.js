@@ -3,7 +3,7 @@
 // whole behaviour is testable in Node.
 
 import {
-  evaluate, fitNumber, roundToDisplay, tokensText, clean, CalcError, mathError, DEFAULT_DISP,
+  evaluate, fitNumber, roundToDisplay, tokensText, clean, CalcError, mathError, DEFAULT_DISP, FIN_VARS,
 } from './math.js';
 import * as F from './finance.js';
 import { KEY_MAP } from './keys.js';
@@ -18,50 +18,74 @@ const padL = (s, w) => ' '.repeat(Math.max(0, w - len(s))) + s;
 const padR = (s, w) => s + ' '.repeat(Math.max(0, w - len(s)));
 
 // ---------- SETUP ----------
-const DISPLAY_OPTIONS = [
-  'Norm1', 'Norm2',
-  ...Array.from({ length: 10 }, (_, i) => `Fix${i}`),
-  ...Array.from({ length: 10 }, (_, i) => `Sci${i}`),
-];
-
+// The setup screen of the FC-200V, in the unit's order and option order
+// (manual E-15 to E-22). Fix, Sci and Norm all set the one display format.
 export const SETUP_ITEMS = [
-  { key: 'payment', label: 'Payment', options: ['End', 'Begin'] },
-  { key: 'dateMode', label: 'Date Mode', options: ['365', '360'] },
+  { key: 'payment', label: 'Payment', options: ['Begin', 'End'] },
+  { key: 'dateMode', label: 'Date Mode', options: ['360', '365'] },
   { key: 'odd', label: 'dn', options: ['CI', 'SI'] },
-  { key: 'periods', label: 'Periods/Y', options: ['Annu', 'Semi'] },
+  { key: 'periods', label: 'Periods/Y', options: ['Annual', 'Semi'] },
   { key: 'bondDate', label: 'Bond Date', options: ['Date', 'Term'] },
   { key: 'dateInput', label: 'Date Input', options: ['MDY', 'DMY'] },
-  { key: 'prfRatio', label: 'PRF/Ratio', options: ['PRF', 'r'] },
+  { key: 'prfRatio', label: 'PRF/Ratio', options: ['PRF', 'r%'] },
   { key: 'bEven', label: 'B-Even', options: ['Quantity', 'Sales'] },
+  { key: 'sep', label: 'Digit Sep.', options: ['Superscript', 'Subscript', 'Off'] },
   { key: 'angle', label: 'Angle', options: ['Deg', 'Rad', 'Gra'] },
-  { key: 'display', label: 'Display', options: DISPLAY_OPTIONS },
-  { key: 'statFreq', label: 'STAT', options: ['Off', 'On'] },
-  { key: 'sep', label: 'Digit Sep.', options: ['Off', 'On'] },
-  { key: 'contrast', label: 'Contrast', options: ['-3', '-2', '-1', '0', '1', '2', '3'] },
+  { key: 'display', label: 'Fix', digits: ['Fix', 0, 9] },
+  { key: 'display', label: 'Sci', digits: ['Sci', 0, 9] },
+  { key: 'display', label: 'Norm', digits: ['Norm', 1, 2] },
+  { key: 'statFreq', label: 'STAT', options: ['On', 'Off'] },
+  { key: 'contrast', label: 'CONTRAST', options: ['-3', '-2', '-1', '0', '1', '2', '3'] },
 ];
 
-const DEFAULT_SETUP = Object.fromEntries(SETUP_ITEMS.map((s) => [s.key, s.options[0]]));
-DEFAULT_SETUP.contrast = '0';
+const DEFAULT_SETUP = {
+  payment: 'End', dateMode: '365', odd: 'CI', periods: 'Annual', bondDate: 'Date',
+  dateInput: 'MDY', prfRatio: 'PRF', bEven: 'Quantity', sep: 'Off', angle: 'Deg',
+  display: 'Norm1', statFreq: 'Off', contrast: '0',
+};
+
+// Saved settings from older versions may hold values that no longer exist.
+function sanitizeSetup(saved = {}) {
+  const out = { ...DEFAULT_SETUP };
+  for (const item of SETUP_ITEMS) {
+    const v = saved[item.key];
+    if (item.options ? item.options.includes(v) : /^(Fix|Sci)\d$|^Norm[12]$/.test(v ?? '')) out[item.key] = v;
+  }
+  return out;
+}
 
 export function dispOf(setup) {
   const m = /^(Norm|Fix|Sci)(\d)$/.exec(setup.display);
   return m ? { type: m[1], n: Number(m[2]) } : DEFAULT_DISP;
 }
 
+// The "Set:" row of a mode opens just the settings that apply to that mode.
+const MODE_SETTINGS = {
+  SMPL: ['dateMode'],
+  CMPD: ['payment', 'odd'],
+  AMRT: ['payment'],
+  DAYS: ['dateMode', 'dateInput'],
+  BOND: ['periods', 'bondDate', 'dateMode', 'dateInput'],
+  BEVN: ['prfRatio', 'bEven'],
+};
+
 // ---------- mode definitions ----------
 const set = (setting) => ({ k: 'Set', type: 'set', setting });
 const inp = (k, label, extra) => ({ k, label: label ?? k, type: 'in', ...extra });
 const both = (k, label, extra) => ({ k, label: label ?? k, type: 'both', ...extra });
 const out = (k, label) => ({ k, label: label ?? k, type: 'out' });
-const res = (k, label) => ({ k, label: label ?? k, type: 'res' }); // shown after a solve
 
-const BEVN_SUBS = ['BEVN', 'MOS', 'DOL', 'DFL', 'DCL', 'CONV'];
+const BEVN_SUBS = [
+  ['BEV', 'BEV'], ['MOS', 'MOS'], ['DOL', 'DOL'], ['DFL', 'DFL'], ['DCL', 'DCL'], ['CONV', 'QTY CONV.'],
+];
 
+// n, I%, PV, PMT, FV, P/Y, C/Y, PM1, PM2 and Dys are the shared financial
+// variables (VARS): every mode that uses them reads and writes the same value.
 export function itemsFor(state) {
   const s = state.setup;
   switch (state.mode) {
     case 'SMPL':
-      return [set('dateMode'), inp('Dys'), inp('I%'), inp('PV'), out('SI'), out('SFV')];
+      return [set('dateMode'), inp('Dys'), inp('I%'), inp('PV'), out('SI'), out('SFV'), out('ALL')];
     case 'CMPD':
       return [set('payment'), both('n'), both('I%'), both('PV'), both('PMT'), both('FV'), inp('P/Y'), inp('C/Y')];
     case 'CASH':
@@ -72,23 +96,20 @@ export function itemsFor(state) {
         inp('P/Y'), inp('C/Y'), out('BAL'), out('INT'), out('PRN'), out('ΣINT'), out('ΣPRN'),
       ];
     case 'CNVR':
-      return [inp('cn', 'n'), inp('I%'), out('EFF'), out('APR')];
+      return [inp('n'), inp('I%'), out('EFF'), out('APR')];
     case 'COST':
-      return [both('Cst'), both('Sel'), both('Mrg')];
+      return [both('CST'), both('SEL'), both('MRG')];
     case 'DAYS':
       return [set('dateMode'), both('d1', 'd1', { date: true }), both('d2', 'd2', { date: true }), both('Dys')];
     case 'DEPR':
-      return [
-        inp('Dn', 'n'), inp('DI%', 'I%'), inp('DPV', 'PV'), inp('DFV', 'FV'), inp('j'), inp('YR1'),
-        out('SL'), out('FP'), out('SYD'), out('DB'), res('dRDV', 'RDV'),
-      ];
+      return [inp('n'), inp('I%'), inp('PV'), inp('FV'), inp('j'), inp('YR1'), out('SL'), out('FP'), out('SYD'), out('DB')];
     case 'BOND':
       return [
         set('periods'),
         ...(s.bondDate === 'Date'
           ? [inp('bd1', 'd1', { date: true }), inp('bd2', 'd2', { date: true })]
-          : [inp('Bn', 'n')]),
-        inp('bRDV', 'RDV'), inp('CPN'), both('PRC'), both('YLD'), res('bINT', 'INT'), res('CST'),
+          : [inp('n')]),
+        inp('bRDV', 'RDV'), inp('CPN'), both('PRC', 'PRC', { report: true }), both('YLD'),
       ];
     case 'BEVN':
       return bevnItems(state);
@@ -100,9 +121,9 @@ function bevnItems(state) {
   const s = state.setup;
   const b = (label) => both(`b${label}`, label);
   switch (state.bevnSub) {
-    case 'BEVN':
+    case 'BEV':
       return [
-        b('PRC'), b('VCU'), b('FC'), s.prfRatio === 'PRF' ? b('PRF') : b('r%'),
+        set('prfRatio'), b('PRC'), b('VCU'), b('FC'), s.prfRatio === 'PRF' ? b('PRF') : b('r%'),
         s.bEven === 'Quantity' ? b('QBE') : b('SBE'),
       ];
     case 'MOS':
@@ -110,7 +131,7 @@ function bevnItems(state) {
     case 'DOL':
       return [b('SAL'), b('VC'), b('FC'), b('DOL')];
     case 'DFL':
-      return [b('EBIT'), b('ITR'), b('DFL')];
+      return [b('EIT'), b('ITR'), b('DFL')];
     case 'DCL':
       return [b('SAL'), b('VC'), b('FC'), b('ITR'), b('DCL')];
     case 'CONV':
@@ -119,14 +140,19 @@ function bevnItems(state) {
   return [];
 }
 
+// Labels for values shown on a result screen.
+const RESULT_LABEL = { dRDV: 'RDV', bINT: 'INT' };
+
+const FIN_DEFAULTS = {
+  n: 0, 'I%': 0, PV: 0, PMT: 0, FV: 0, 'P/Y': 1, 'C/Y': 1, PM1: 0, PM2: 0, Dys: 0,
+};
+
 const DEFAULT_VARS = {
-  n: 0, 'I%': 0, PV: 0, PMT: 0, FV: 0, 'P/Y': 12, 'C/Y': 12,
-  Dys: 0, PM1: 1, PM2: 1, cn: 0, Cst: 0, Sel: 0, Mrg: 0,
-  d1: 1012026, d2: 1012026,
-  Dn: 0, 'DI%': 0, DPV: 0, DFV: 0, j: 1, YR1: 12,
-  bd1: 1012026, bd2: 1012027, Bn: 0, bRDV: 100, CPN: 0, PRC: 0, YLD: 0,
+  ...FIN_DEFAULTS,
+  CST: 0, SEL: 0, MRG: 0, d1: 1012026, d2: 1012026, j: 1, YR1: 12,
+  bd1: 1012026, bd2: 1012027, bRDV: 100, CPN: 0, PRC: 0, YLD: 0,
   bPRC: 0, bVCU: 0, bFC: 0, bPRF: 0, 'br%': 0, bQBE: 0, bSBE: 0, bSAL: 0, bMOS: 0,
-  bVC: 0, bDOL: 0, bEBIT: 0, bITR: 0, bDFL: 0, bDCL: 0, bQTY: 0,
+  bVC: 0, bDOL: 0, bEIT: 0, bITR: 0, bDFL: 0, bDCL: 0, bQTY: 0,
   A: 0, B: 0, C: 0, D: 0, X: 0, Y: 0, M: 0, Ans: 0,
 };
 
@@ -145,7 +171,7 @@ export function createState(saved = {}) {
   const state = {
     off: false,
     mode,
-    bevnSub: BEVN_SUBS.includes(saved.bevnSub) ? saved.bevnSub : 'BEVN',
+    bevnSub: BEVN_SUBS.some(([id]) => id === saved.bevnSub) ? saved.bevnSub : 'BEV',
     screen: 'main',
     shift: false,
     alpha: false,
@@ -153,9 +179,8 @@ export function createState(saved = {}) {
     error: null,
     message: null,
     overwrite: false,
-    setup: { ...DEFAULT_SETUP, ...saved.setup },
+    setup: sanitizeSetup(saved.setup),
     vars: { ...DEFAULT_VARS, ...saved.vars },
-    solved: [],
     disp: false,
     cursor: 0,
     top: 0,
@@ -171,7 +196,8 @@ export function createState(saved = {}) {
       col: 0,
       top: 0,
     },
-    fmem: { 1: null, 2: null, ...saved.fmem },
+    shortcuts: { 1: null, 2: null, ...saved.shortcuts }, // mode + settings + values, or a formula
+    fmem: { 1: null, 2: null, ...(typeof saved.fmem?.[1] === 'object' ? {} : saved.fmem) }, // one function each
     stack: [], // screens to return to from menus
   };
   if (mode === 'STAT') state.screen = 'statEditor';
@@ -186,6 +212,7 @@ export function snapshot(state) {
     vars: state.vars,
     cash: state.cash,
     stat: { type: state.stat.type, data: state.stat.data },
+    shortcuts: state.shortcuts,
     fmem: state.fmem,
   };
 }
@@ -207,8 +234,12 @@ export function press(state, id) {
     const op = state.pending;
     state.pending = null;
     if (key.alpha && MEMORY_VARS.includes(key.alpha)) {
+      // A variable key right after STO/RCL picks that variable directly.
       state.shift = state.alpha = false;
-      memoryOp(state, op, key.alpha);
+      if (op === 'STO') {
+        closeStoMenu(state);
+        storeTo(state, key.alpha);
+      } else runAction(state, `ins:${key.alpha}`);
       return state;
     }
   }
@@ -257,25 +288,24 @@ function runAction(state, action) {
 
   switch (action) {
     case 'setup':
-      if (state.screen !== 'setup') openScreen(state, 'setup');
-      state.setupCursor = 0;
-      state.setupTop = 0;
+      if (state.screen !== 'setup') openSetup(state, SETUP_ITEMS);
       return;
     case 'clr':
-      openMenu(state, [
-        { text: '1:Setup', run: () => confirm(state, 'Clear Setup?', () => clearSetup(state), 'Clear Setup!') },
-        { text: '2:Memory', run: () => confirm(state, 'Clear Memory?', () => clearMemory(state), 'Clear Memory!') },
-        { text: '3:All', run: () => confirm(state, 'Clear All?', () => { clearSetup(state); clearMemory(state); }, 'Clear All!') },
-      ], 'Clear?');
+      openClrMenu(state);
+      return;
+    case 'rcl':
+      state.pending = 'RCL';
       return;
     case 'sto':
-    case 'rcl':
-      state.pending = action.toUpperCase();
+      openStoMenu(state);
       return;
     case 'm+':
     case 'm-': {
       const v = currentValue(state);
-      if (v !== null) state.vars.M += action === 'm+' ? v : -v;
+      if (v !== null) {
+        state.vars.M += action === 'm+' ? v : -v;
+        state.vars.Ans = v;
+      }
       return;
     }
     case 'insmode':
@@ -288,9 +318,11 @@ function runAction(state, action) {
       })), null, true);
       return;
     case 'vars':
-      openScreen(state, 'vars');
-      state.varsCursor = 0;
-      state.varsTop = 0;
+      // Financial variables, inserted into the expression being typed.
+      openMenu(state, FIN_VARS.map((name) => ({
+        text: `${name}`,
+        run: () => runAction(state, `ins:${name}`),
+      })), null, true);
       return;
     case 'drg':
       openMenu(state, [
@@ -304,25 +336,13 @@ function runAction(state, action) {
       return;
   }
   if (action.startsWith('fmem:')) {
-    const slot = action.slice(5);
-    state.fmem[slot] = {
-      mode: state.mode,
-      bevnSub: state.bevnSub,
-      cursor: state.cursor,
-      tokens: state.mode === 'COMP' && state.comp.edit.tokens.length ? [...state.comp.edit.tokens] : null,
-    };
-    state.message = `FMEM${slot} Stored`;
+    // In COMP the shortcut keys recall a stored function (FMEM1/FMEM2).
+    const token = state.fmem[action.slice(5)];
+    if (token && isCalcScreen(state)) calcKey(state, `ins:${token}`);
     return;
   }
   if (action.startsWith('shortcut:')) {
-    const f = state.fmem[action.slice(9)];
-    if (!f) return;
-    switchMode(state, f.mode, f.bevnSub);
-    if (state.screen === 'main' && state.mode !== 'COMP') {
-      state.cursor = Math.min(f.cursor, itemsFor(state).length - 1);
-      scrollTo(state, 'top', state.cursor);
-    }
-    if (f.tokens) state.comp.edit = { tokens: [...f.tokens], pos: f.tokens.length };
+    recallShortcut(state, state.shortcuts[action.slice(9)]);
     return;
   }
 
@@ -331,7 +351,7 @@ function runAction(state, action) {
     setup: setupKey,
     menu: menuKey,
     confirm: confirmKey,
-    vars: varsKey,
+    result: resultKey,
     cashEditor: cashKey,
     statEditor: statEditorKey,
     statCalc: calcKey,
@@ -393,7 +413,6 @@ function switchMode(state, mode, bevnSub) {
   state.error = null;
   state.pending = null;
   state.message = null;
-  state.solved = [];
   state.disp = false;
   if (mode === 'COMP') {
     state.comp.edit = { tokens: [], pos: 0 };
@@ -416,17 +435,17 @@ function switchMode(state, mode, bevnSub) {
   if (mode === 'BEVN') {
     if (bevnSub) state.bevnSub = bevnSub;
     else {
-      openMenu(state, BEVN_SUBS.map((s, i) => ({
-        text: `${i + 1}:${s === 'CONV' ? 'QUANTITY CNV' : s}`,
+      openMenu(state, BEVN_SUBS.map(([id, name]) => ({
+        text: `${name}:EXE`,
         run: () => {
-          state.bevnSub = s;
+          state.bevnSub = id;
           state.screen = 'main';
           state.stack = [];
           state.cursor = 0;
           state.top = 0;
         },
       })), null);
-      state.menu.cursor = BEVN_SUBS.indexOf(state.bevnSub);
+      state.menu.cursor = BEVN_SUBS.findIndex(([id]) => id === state.bevnSub);
       scrollTo(state.menu, 'top', state.menu.cursor);
     }
   }
@@ -448,21 +467,147 @@ function openMenu(state, items, title, insertBack = false) {
   state.menu = { items, title, cursor: 0, top: 0, insertBack };
 }
 
-function confirm(state, text, run, done) {
+// A Yes/Cancel screen. `back` is where both answers return to; `done` is the
+// message shown after Yes.
+function confirm(state, text, run, done, back = null) {
+  const home = state.mode === 'STAT' ? 'statEditor' : 'main';
+  state.confirm = { text, run, done, back: back ?? { screen: home, depth: 0 } };
   state.screen = 'confirm';
-  state.confirm = { text, run, done };
 }
 
+function openClrMenu(state) {
+  const ask = (text, run, done) => () => confirm(state, text, run, done);
+  const slots = (what) => () =>
+    openMenu(state, [1, 2].map((n) => ({
+      text: `${n}:${what}${n}`,
+      run: ask(`Clear ${what}${n}?`, () => {
+        state[what === 'Shortcut' ? 'shortcuts' : 'fmem'][n] = null;
+      }, 'Cleared'),
+    })), null);
+  openMenu(state, [
+    { text: 'Setup:EXE', run: ask('Clear Setup?', () => clearSetup(state), 'Clear Setup!') },
+    { text: 'Memory:EXE', run: ask('Clear Memory?', () => clearMemory(state), 'Clear Memory!') },
+    { text: 'VARS:EXE', run: ask('Clear VARS?', () => clearVars(state), 'Clear VARS!') },
+    { text: 'Shortcut:EXE', run: slots('Shortcut') },
+    { text: 'FMEM:EXE', run: slots('FMEM') },
+    {
+      text: 'All:EXE',
+      run: ask('Clear All?', () => {
+        clearSetup(state);
+        clearMemory(state);
+        clearVars(state);
+        state.cash = [];
+        state.stat.data = [];
+        state.shortcuts = { 1: null, 2: null };
+        state.fmem = { 1: null, 2: null };
+      }, 'Clear All!'),
+    },
+  ], null);
+}
+
+// Initializing the setup also returns the unit to COMP (manual E-22).
 function clearSetup(state) {
   state.setup = { ...DEFAULT_SETUP };
+  state.afterConfirm = 'COMP';
 }
 
+// Memory: Ans, M and the variables A–Y. VARS are cleared separately.
 function clearMemory(state) {
-  state.vars = { ...DEFAULT_VARS };
-  state.cash = [];
-  state.stat.data = [];
-  state.fmem = { 1: null, 2: null };
-  state.solved = [];
+  for (const v of [...MEMORY_VARS, 'Ans']) state.vars[v] = 0;
+}
+
+function clearVars(state) {
+  for (const k of Object.keys(DEFAULT_VARS)) {
+    if (!MEMORY_VARS.includes(k) && k !== 'Ans') state.vars[k] = DEFAULT_VARS[k];
+  }
+}
+
+// ---------- STO, shortcuts and FMEM ----------
+// STO lists the variables (and shortcut slots); "#" marks one that holds data.
+function openStoMenu(state) {
+  // An unfinished line (e.g. just "sin⁻¹(" for FMEM) has no value yet; that
+  // is only an error if it is then stored to a variable.
+  const value = currentValue(state);
+  if (value === null) state.error = null;
+  const origin = { screen: state.screen, depth: state.stack.length };
+  state.stoValue = value;
+  const mark = (filled) => (filled ? '#' : ' ');
+  const items = MEMORY_VARS.map((v) => ({
+    text: `${mark(state.vars[v] !== 0)}${v}:`,
+    run: () => confirmStore(state, origin, () => storeTo(state, v)),
+  }));
+  if (state.mode !== 'STAT') {
+    for (const n of [1, 2]) {
+      items.push({
+        text: `${mark(state.shortcuts[n])}Shortcut${n}`,
+        run: () => confirmStore(state, origin, () => { state.shortcuts[n] = captureShortcut(state); }),
+      });
+    }
+  }
+  if (state.mode === 'COMP') {
+    for (const n of [1, 2]) {
+      items.push({
+        text: `${mark(state.fmem[n])}FMEM${n}`,
+        run: () => confirmStore(state, origin, () => { state.fmem[n] = lastFunction(state); }),
+      });
+    }
+  }
+  openMenu(state, items, null);
+  state.pending = 'STO';
+}
+
+function closeStoMenu(state) {
+  while (state.screen === 'menu') back(state);
+}
+
+function confirmStore(state, origin, run) {
+  confirm(state, 'Store?', run, null, origin);
+}
+
+function storeTo(state, letter) {
+  if (state.stoValue === null) {
+    state.error = 'Syntax ERROR';
+    return;
+  }
+  state.vars[letter] = state.stoValue;
+  state.vars.Ans = state.stoValue;
+}
+
+// The function just typed in COMP (e.g. "sin⁻¹(" picked from CTLG).
+function lastFunction(state) {
+  const { tokens, pos } = state.comp.edit;
+  return tokens[pos - 1] ?? tokens[tokens.length - 1] ?? null;
+}
+
+function captureShortcut(state) {
+  if (state.mode === 'COMP') {
+    return { mode: 'COMP', tokens: [...state.comp.edit.tokens] };
+  }
+  const values = {};
+  for (const item of itemsFor(state)) {
+    if (item.type === 'in' || item.type === 'both') values[item.k] = state.vars[item.k];
+  }
+  return {
+    mode: state.mode,
+    bevnSub: state.bevnSub,
+    setup: { ...state.setup },
+    values,
+    cursor: state.cursor,
+  };
+}
+
+function recallShortcut(state, sc) {
+  if (!sc) return;
+  if (sc.mode === 'COMP') {
+    switchMode(state, 'COMP');
+    state.comp.edit = { tokens: [...sc.tokens], pos: sc.tokens.length };
+    return;
+  }
+  state.setup = sanitizeSetup(sc.setup);
+  Object.assign(state.vars, sc.values);
+  switchMode(state, sc.mode, sc.bevnSub);
+  state.cursor = Math.min(sc.cursor, itemsFor(state).length - 1);
+  scrollTo(state, 'top', state.cursor);
 }
 
 // Value that STO / M+ act on: the evaluated calculation line, the selected field, or Ans.
@@ -477,7 +622,7 @@ function currentValue(state) {
       const item = itemsFor(state)[state.cursor];
       if (state.edit?.tokens.length) commitInput(state, item);
       const v = state.vars[item.k];
-      const shown = item.type === 'in' || item.type === 'both' || state.solved.includes(item.k);
+      const shown = item.type === 'in' || item.type === 'both';
       if (typeof v === 'number' && !item.date && shown) return v;
     }
     return state.vars.Ans;
@@ -485,15 +630,6 @@ function currentValue(state) {
     fail(state, e);
     return null;
   }
-}
-
-function memoryOp(state, op, letter) {
-  if (op === 'RCL') {
-    runAction(state, `ins:${letter}`);
-    return;
-  }
-  const v = currentValue(state);
-  if (v !== null) state.vars[letter] = v;
 }
 
 const isCalcScreen = (state) =>
@@ -598,12 +734,8 @@ function scrollTo(obj, field, idx, visible = H) {
 }
 
 function moveCursor(state, delta) {
-  const items = itemsFor(state);
-  let c = state.cursor;
-  // Result-only rows (RDV, INT, CST) are not stops for the cursor until solved.
-  do c += delta;
-  while (c >= 0 && c < items.length && items[c].type === 'res' && !state.solved.includes(items[c].k));
-  if (c < 0 || c >= items.length) return;
+  const c = state.cursor + delta;
+  if (c < 0 || c >= itemsFor(state).length) return;
   state.cursor = c;
   state.disp = false;
   scrollTo(state, 'top', state.cursor);
@@ -651,7 +783,8 @@ function listKey(state, action) {
           fail(state, e);
         }
       } else if (item.type === 'set') {
-        openOptions(state, SETUP_ITEMS.find((x) => x.key === item.setting));
+        const keys = MODE_SETTINGS[state.mode];
+        openSetup(state, SETUP_ITEMS.filter((x) => keys.includes(x.key)));
       } else if (item.type === 'editor') {
         openScreen(state, 'cashEditor');
         state.cashRow = 0;
@@ -674,20 +807,39 @@ function commitInput(state, item) {
   if (item.date) F.parseDate(v, state.setup.dateInput);
   state.vars[item.k] = v;
   state.edit = null;
-  state.solved = [];
 }
 
+// "xxx:Solve" rows (and BOND's PRC) show their answers on a result screen;
+// EXE returns to the value input screen. Other values update in place.
 function solveItem(state, item) {
   try {
     const results = compute(state, item.k);
     for (const k of Object.keys(results)) results[k] = clean(results[k]);
     Object.assign(state.vars, results);
-    if (!item.date) state.vars.Ans = results[item.k];
-    const keys = Object.keys(results);
-    state.solved = item.type === 'out' ? [...new Set([...state.solved, ...keys])] : keys.filter((k) => k !== item.k);
-    state.disp = true;
+    const [first] = Object.keys(results);
+    if (!item.date) state.vars.Ans = results[first]; // the top result goes to Ans
+    if (item.type === 'out' || item.report) {
+      state.result = { entries: Object.entries(results).filter(([k]) => k !== 'I%'), top: 0 };
+      openScreen(state, 'result');
+    } else {
+      state.disp = true;
+    }
   } catch (e) {
     fail(state, e);
+  }
+}
+
+function resultKey(state, action) {
+  const r = state.result;
+  switch (action) {
+    case 'up':
+    case 'down':
+      r.top = Math.max(0, Math.min(Math.max(0, r.entries.length - H), r.top + (action === 'up' ? -1 : 1)));
+      return;
+    case 'exe':
+    case 'esc':
+    case 'ac':
+      back(state);
   }
 }
 
@@ -705,8 +857,10 @@ export function compute(state, key) {
   const s = state.setup;
   const dn = Number(s.dateMode);
   switch (state.mode) {
-    case 'SMPL':
-      return { [key]: F.simpleInterest({ Dys: v.Dys, iPct: v['I%'], PV: v.PV, dn })[key] };
+    case 'SMPL': {
+      const r = F.simpleInterest({ Dys: v.Dys, iPct: v['I%'], PV: v.PV, dn });
+      return key === 'ALL' ? { SI: r.SI, SFV: r.SFV } : { [key]: r[key] };
+    }
     case 'CMPD':
       return { [key]: F.solveTVM(key, tvm(state)) };
     case 'CASH': {
@@ -721,7 +875,7 @@ export function compute(state, key) {
     case 'AMRT':
       return { [key]: F.amortize({ ...tvm(state), PM1: v.PM1, PM2: v.PM2 })[key] };
     case 'CNVR':
-      return { [key]: key === 'EFF' ? F.toEffective(v.cn, v['I%']) : F.toNominal(v.cn, v['I%']) };
+      return { [key]: key === 'EFF' ? F.toEffective(v.n, v['I%']) : F.toNominal(v.n, v['I%']) };
     case 'COST':
       return { [key]: F.solveCost(key, v) };
     case 'DAYS': {
@@ -732,7 +886,7 @@ export function compute(state, key) {
       return { d2: F.encodeDate(F.addDays(F.parseDate(v.d1, di), v.Dys), di) };
     }
     case 'DEPR': {
-      const r = F.depreciation(key, { n: v.Dn, iPct: v['DI%'], PV: v.DPV, FV: v.DFV, j: v.j, YR1: v.YR1 });
+      const r = F.depreciation(key, { n: v.n, iPct: v['I%'], PV: v.PV, FV: v.FV, j: v.j, YR1: v.YR1 });
       return { [key]: r.dep, dRDV: r.RDV };
     }
     case 'BOND': {
@@ -741,12 +895,12 @@ export function compute(state, key) {
         dateMode,
         d1: dateMode ? F.parseDate(v.bd1, s.dateInput) : null,
         d2: dateMode ? F.parseDate(v.bd2, s.dateInput) : null,
-        n: v.Bn, RDV: v.bRDV, CPN: v.CPN, PRC: v.PRC, YLD: v.YLD,
-        M: s.periods === 'Annu' ? 1 : 2, dn,
+        n: v.n, RDV: v.bRDV, CPN: v.CPN, PRC: v.PRC, YLD: v.YLD,
+        M: s.periods === 'Annual' ? 1 : 2, dn,
       };
       const YLD = key === 'YLD' ? F.bondYield(args) : v.YLD;
       const p = F.bondPrice({ ...args, YLD });
-      return key === 'YLD' ? { YLD, bINT: p.INT, CST: p.PRC + p.INT } : { PRC: p.PRC, bINT: p.INT, CST: p.CST };
+      return key === 'YLD' ? { YLD } : { PRC: p.PRC, bINT: p.INT, CST: p.CST };
     }
     case 'BEVN':
       return solveBevn(state, key);
@@ -762,14 +916,22 @@ function solveBevn(state, key) {
   if (rel === 'CONV') {
     rel = ['VC', 'VCU'].includes(label) || (label === 'QTY' && vals.PRC === 0) ? 'QTY:VC' : 'QTY:SAL';
   }
-  const opts = { ratio: state.setup.prfRatio === 'r', sales: state.setup.bEven === 'Sales' };
-  const fn = F.BEVN_RELATIONS[rel];
+  const opts = { ratio: state.setup.prfRatio === 'r%', sales: state.setup.bEven === 'Sales' };
+  const fn = F.BEVN_RELATIONS[rel === 'BEV' ? 'BEVN' : rel];
   const x = F.solveFor((t) => fn({ ...vals, [label]: t }, opts), vals[label]);
   return { [key]: x };
 }
 
 // ---------- SETUP ----------
+function openSetup(state, items) {
+  openScreen(state, 'setup');
+  state.setupItems = items;
+  state.setupCursor = 0;
+  state.setupTop = 0;
+}
+
 function cycleSetting(state, item, dir) {
+  if (!item.options) return;
   const opts = item.options;
   const idx = opts.indexOf(state.setup[item.key]);
   applySetting(state, item, opts[(Math.max(0, idx) + dir + opts.length) % opts.length]);
@@ -786,27 +948,30 @@ function applySetting(state, item, next) {
       }
     }
   }
+  if (item.key === 'statFreq') {
+    // Choosing either STAT option clears the DataEditor (manual E-21).
+    state.stat.data = [];
+    state.cash = [];
+  }
   state.setup[item.key] = next;
-  state.solved = [];
   state.disp = false;
 }
 
 function setupKey(state, action) {
-  const item = SETUP_ITEMS[state.setupCursor];
+  const items = state.setupItems;
+  const item = items[state.setupCursor];
   switch (action) {
     case 'up':
     case 'down':
-      state.setupCursor = Math.max(0, Math.min(SETUP_ITEMS.length - 1, state.setupCursor + (action === 'up' ? -1 : 1)));
+      state.setupCursor = Math.max(0, Math.min(items.length - 1, state.setupCursor + (action === 'up' ? -1 : 1)));
       scrollTo(state, 'setupTop', state.setupCursor);
       return;
     case 'exe':
       openOptions(state, item);
       return;
     case 'right':
-      cycleSetting(state, item, 1);
-      return;
     case 'left':
-      cycleSetting(state, item, -1);
+      cycleSetting(state, item, action === 'right' ? 1 : -1);
       return;
     case 'esc':
     case 'ac':
@@ -814,8 +979,8 @@ function setupKey(state, action) {
   }
 }
 
-// The numbered choice list the real unit shows for a setting, e.g.
-// "1:Begin 2:End". Display asks Fix/Sci/Norm first, then the digit count.
+// The numbered choice list the unit shows for a setting ("1:Begin 2:End"),
+// or the digit prompt for Fix, Sci and Norm.
 function openOptions(state, item) {
   if (item.key === 'contrast') return; // adjusted with ◀▶ only
   const origin = state.screen;
@@ -825,27 +990,21 @@ function openOptions(state, item) {
     state.stack.length = depth;
     state.screen = origin;
   };
-  if (item.key === 'display') {
-    const digits = (type, from, to) => () =>
-      openMenu(
-        state,
-        Array.from({ length: to - from + 1 }, (_, i) => ({
-          text: `${from + i}`,
-          digit: from + i,
-          run: done(`${type}${from + i}`),
-        })),
-        `${type} ${from}~${to}?`,
-      );
-    openMenu(state, [
-      { text: '1:Fix', run: digits('Fix', 0, 9) },
-      { text: '2:Sci', run: digits('Sci', 0, 9) },
-      { text: '3:Norm', run: digits('Norm', 1, 2) },
-    ], null);
+  if (item.digits) {
+    const [type, from, to] = item.digits;
+    openMenu(
+      state,
+      Array.from({ length: to - from + 1 }, (_, i) => ({
+        text: `${from + i}`,
+        digit: from + i,
+        run: done(`${type}${from + i}`),
+      })),
+      `${type} ${from}~${to}?`,
+    );
     return;
   }
-  const order = item.key === 'payment' ? ['Begin', 'End'] : item.options;
-  openMenu(state, order.map((opt, i) => ({ text: `${i + 1}:${opt}`, run: done(opt) })), null);
-  state.menu.cursor = Math.max(0, order.indexOf(state.setup[item.key]));
+  openMenu(state, item.options.map((opt, i) => ({ text: `${i + 1}:${opt}`, run: done(opt) })), null);
+  state.menu.cursor = Math.max(0, item.options.indexOf(state.setup[item.key]));
 }
 
 // ---------- menus ----------
@@ -880,29 +1039,18 @@ function menuKey(state, action) {
 }
 
 function confirmKey(state, action) {
-  if (action === 'exe') {
-    const { run, done } = state.confirm;
-    run();
-    state.message = done;
+  if (!['exe', 'esc', 'ac'].includes(action)) return;
+  const c = state.confirm;
+  state.screen = c.back.screen;
+  state.stack.length = c.back.depth;
+  state.edit = null;
+  if (action !== 'exe') return;
+  c.run();
+  if (state.afterConfirm) {
+    switchMode(state, state.afterConfirm);
+    state.afterConfirm = null;
   }
-  if (['exe', 'esc', 'ac'].includes(action)) {
-    state.screen = state.mode === 'STAT' ? 'statEditor' : 'main';
-    state.stack = [];
-    state.edit = null;
-  }
-}
-
-function varsKey(state, action) {
-  switch (action) {
-    case 'up':
-    case 'down':
-      state.varsCursor = Math.max(0, Math.min(MEMORY_VARS.length, state.varsCursor + (action === 'up' ? -1 : 1)));
-      scrollTo(state, 'varsTop', state.varsCursor);
-      return;
-    case 'esc':
-    case 'ac':
-      back(state);
-  }
+  if (c.done) state.message = c.done;
 }
 
 // ---------- CASH data editor ----------
@@ -918,7 +1066,6 @@ function cashKey(state, action) {
       try {
         state.cash[state.cashRow] = evaluate(state.edit.tokens, ctx(state));
         state.edit = null;
-        state.solved = [];
         moveCash(state, 1);
       } catch (e) {
         fail(state, e);
@@ -928,7 +1075,6 @@ function cashKey(state, action) {
       if (state.edit) deleteToken(state.edit);
       else if (state.cashRow < state.cash.length) {
         state.cash.splice(state.cashRow, 1);
-        state.solved = [];
       }
       return;
     case 'left':
@@ -1082,12 +1228,6 @@ function openStatMenu(state) {
 }
 
 // ---------- rendering ----------
-function valueText(state, item, width) {
-  const v = state.vars[item.k];
-  if (item.date) return F.formatDate(v);
-  return fitNumber(v, width, dispOf(state.setup), state.setup.sep === 'On');
-}
-
 // One line showing `prefix` followed by an input being edited, scrolled so
 // the cursor stays visible.
 function inputLine(prefix, edit) {
@@ -1145,7 +1285,7 @@ export function render(state) {
       confirm: () => {
         view.lines = [state.confirm.text, '', '[EXE] :Yes', '[ESC] :Cancel'];
       },
-      vars: renderVars,
+      result: renderResult,
       cashEditor: renderCash,
       statEditor: renderStatEditor,
       statCalc: renderCalc,
@@ -1176,7 +1316,7 @@ function renderCalc(state, view) {
   const all = [...before, ...chars(tokensText(c.edit.tokens.slice(c.edit.pos)))];
   if (c.resultShown) {
     for (let r = 0; r < 3; r++) view.lines[r] = all.slice(r * W, (r + 1) * W).join('');
-    view.lines[3] = padL(fitNumber(state.vars.Ans, W, dispOf(state.setup), state.setup.sep === 'On'), W);
+    view.lines[3] = padL(fitNumber(state.vars.Ans, W, dispOf(state.setup)), W);
     return;
   }
   // Editing: scroll by whole lines so the cursor stays visible.
@@ -1191,38 +1331,58 @@ function renderCalc(state, view) {
   view.indicators.down = all.length > (firstLine + 3) * W;
 }
 
+// The 3-digit separator applies in the financial modes only (not COMP/STAT).
+function sepChar(state) {
+  if (state.mode === 'COMP' || state.mode === 'STAT' || state.setup.sep === 'Off') return null;
+  return state.setup.sep === 'Subscript' ? ',' : 'ʼ';
+}
+
+function valueLine(state, label, value, date = false) {
+  const prefix = `${label}=`;
+  const w = W - len(prefix);
+  const text = date ? F.formatDate(value) : fitNumber(value, w, dispOf(state.setup), sepChar(state));
+  return prefix + padL(text, w);
+}
+
 function renderList(state, view) {
   const items = itemsFor(state);
-  const visible = items.filter((it) => it.type !== 'res' || state.solved.includes(it.k));
-  const pos = (idx) => visible.indexOf(items[idx]);
-  // Translate cursor/top from item indexes to visible-row indexes.
-  const cur = pos(state.cursor);
-  const view0 = { top: Math.min(state.top, Math.max(0, visible.length - 1)) };
-  scrollTo(view0, 'top', cur);
-  state.top = view0.top;
-  scrolledList(view, visible.length, view0.top, (idx) => {
-    const item = visible[idx];
-    const selected = idx === cur;
+  scrollTo(state, 'top', state.cursor);
+  scrolledList(view, items.length, state.top, (idx) => {
+    const item = items[idx];
+    const selected = idx === state.cursor;
     if (item.type === 'set') return { text: `Set:${state.setup[item.setting]}`, highlight: selected };
     if (item.type === 'editor') return { text: 'Csh=D.Editor x', highlight: selected };
     if (selected && state.edit) return inputLine(`${item.label}=`, state.edit);
-    if (item.type === 'out' && !state.solved.includes(item.k)) {
-      return { text: `${item.label}:Solve`, highlight: selected };
-    }
-    const prefix = `${item.label}=`;
-    const w = W - len(prefix);
-    return { text: prefix + padL(valueText(state, item, w), w), highlight: selected };
+    if (item.type === 'out') return { text: `${item.label}:Solve`, highlight: selected };
+    return { text: valueLine(state, item.label, state.vars[item.k], item.date), highlight: selected };
   });
 }
 
-function renderSetup(state, view) {
-  scrolledList(view, SETUP_ITEMS.length, state.setupTop, (idx) => {
-    const item = SETUP_ITEMS[idx];
-    return {
-      text: `${item.label}:${state.setup[item.key]}`,
-      highlight: idx === state.setupCursor,
-    };
+function renderResult(state, view) {
+  const r = state.result;
+  scrolledList(view, r.entries.length, r.top, (idx) => {
+    const [k, v] = r.entries[idx];
+    return { text: valueLine(state, RESULT_LABEL[k] ?? k, v) };
   });
+}
+
+function setupLine(setup, item) {
+  let value = setup[item.key];
+  if (item.digits) {
+    const m = /^(\D+)(\d)$/.exec(value);
+    if (!m || m[1] !== item.digits[0]) return item.label;
+    value = m[2];
+  }
+  const text = `${item.label}:${value}`;
+  return len(text) <= W ? text : item.label;
+}
+
+function renderSetup(state, view) {
+  const items = state.setupItems;
+  scrolledList(view, items.length, state.setupTop, (idx) => ({
+    text: setupLine(state.setup, items[idx]),
+    highlight: idx === state.setupCursor,
+  }));
 }
 
 function renderMenu(state, view) {
@@ -1230,18 +1390,6 @@ function renderMenu(state, view) {
   const first = m.title ? 1 : 0;
   if (m.title) view.lines[0] = m.title;
   scrolledList(view, m.items.length, m.top, (idx) => ({ text: m.items[idx].text, highlight: idx === m.cursor }), first);
-}
-
-function renderVars(state, view) {
-  const names = [...MEMORY_VARS, 'Ans'];
-  scrolledList(view, names.length, state.varsTop, (idx) => {
-    const prefix = `${names[idx]}=`;
-    const w = W - len(prefix);
-    return {
-      text: prefix + padL(fitNumber(state.vars[names[idx]], w, dispOf(state.setup)), w),
-      highlight: idx === state.varsCursor,
-    };
-  });
 }
 
 function renderCash(state, view) {

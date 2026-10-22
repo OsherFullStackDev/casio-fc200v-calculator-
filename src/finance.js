@@ -144,42 +144,10 @@ export function solveTVM(target, v) {
       if (annuity === 0) throw mathError();
       return finite(-(PV * gamma * g + FV) / annuity);
     case 'n': {
-      const residual = (t) => tvmResidual(i, { ...v, n: t });
-      const c = (PMT * (1 + i * S)) / i;
-      const x = (c - FV) / (PV + c);
-      const guess = Math.log(x) / Math.log(1 + i);
-      if (Number.isInteger(guess)) return guess;
-      // With an odd period the relation is no longer a pure power of (1+i);
-      // refine so that solving FV back from this n gives the same FV.
-      if (Number.isFinite(guess) && guess > 0) {
-        try {
-          return solveFor(residual, guess);
-        } catch {
-          return guess;
-        }
-      }
-      return oddPeriodN(residual, PMT !== 0);
-    }
-  }
-  throw mathError();
-}
-
-// Finds n segment by segment: within [w, w+1) the payment count is fixed, so
-// the residual is continuous there. With a PMT, prefer an n that includes
-// at least one payment over the payment-free n < 1.
-function oddPeriodN(residual, hasPayments) {
-  const segments = [];
-  for (let w = 1; w < 10000; w++) segments.push(w);
-  if (hasPayments) segments.push(0);
-  else segments.unshift(0);
-  for (const w of segments) {
-    const a = w;
-    const b = w + 1 - 1e-12;
-    const fa = residual(a);
-    const fb = residual(b);
-    if (fa === 0) return a;
-    if (Number.isFinite(fa) && Number.isFinite(fb) && Math.sign(fa) !== Math.sign(fb)) {
-      return bisect(residual, a, b, fa);
+      // The manual's closed form: n = log{((1+iS)PMT − FV·i) / ((1+iS)PMT + PV·i)} / log(1+i).
+      const x = ((1 + i * S) * PMT - FV * i) / ((1 + i * S) * PMT + PV * i);
+      if (!(x > 0)) throw mathError();
+      return finite(Math.log(x) / Math.log(1 + i));
     }
   }
   throw mathError();
@@ -199,12 +167,15 @@ export function nfv(iPct, flows) {
 export function irr(flows) {
   if (flows.length < 2) throw mathError();
   const f = (r) => flows.reduce((s, cf, k) => s + cf / (1 + r) ** k, 0);
-  return finite(findRoot(f, 0.1, -0.9999, 1000) * 100);
+  const rate = findRoot(f, 0.1, -0.9999, 1000) * 100;
+  if (rate < -50) throw mathError(); // the unit's documented limit
+  return finite(rate);
 }
 
 // Discounted payback period, interpolated within the period it turns positive.
 export function pbp(iPct, flows) {
   if (!flows.length) throw mathError();
+  if (flows[0] > 0) return 0;
   const i = iPct / 100;
   let cum = 0;
   for (let k = 0; k < flows.length; k++) {
@@ -229,8 +200,10 @@ export function amortize({ PM1, PM2, n, iPct, PV, PMT, PY, CY, begin }) {
   let sumInt = 0;
   let sumPrn = 0;
   for (let k = 1; k <= PM2; k++) {
-    const int = begin && k === 1 ? 0 : -bal * i;
-    const prn = PMT - int;
+    // INT = |BAL·i| × (PMT sign), PRN = PMT + BAL·i (manual E-58).
+    const first = begin && k === 1;
+    const int = first ? 0 : Math.abs(bal * i) * Math.sign(PMT);
+    const prn = first ? PMT : PMT + bal * i;
     bal += prn;
     if (k === PM1) {
       INT = int;
@@ -262,15 +235,15 @@ export function toNominal(n, effPct) {
 }
 
 // ---------- COST: cost / sell / margin ----------
-export function solveCost(target, { Cst, Sel, Mrg }) {
+export function solveCost(target, { CST, SEL, MRG }) {
   switch (target) {
-    case 'Cst': return finite(Sel * (1 - Mrg / 100));
-    case 'Sel':
-      if (Mrg === 100) throw mathError();
-      return finite(Cst / (1 - Mrg / 100));
-    case 'Mrg':
-      if (Sel === 0) throw mathError();
-      return finite((1 - Cst / Sel) * 100);
+    case 'CST': return finite(SEL * (1 - MRG / 100));
+    case 'SEL':
+      if (MRG === 100) throw mathError();
+      return finite(CST / (1 - MRG / 100));
+    case 'MRG':
+      if (SEL === 0) throw mathError();
+      return finite((1 - CST / SEL) * 100);
   }
   throw mathError();
 }
@@ -306,12 +279,10 @@ const dayNumber = ({ y, m, d }) => Date.UTC(y, m - 1, d) / 86400000;
 
 export function daysBetween(d1, d2, dn) {
   if (dn === 365) return dayNumber(d2) - dayNumber(d1);
-  // 30/360 (US) day count.
-  let D1 = d1.d;
-  let D2 = d2.d;
-  if (D1 === 31) D1 = 30;
-  if (D2 === 31 && D1 === 30) D2 = 30;
-  return 360 * (d2.y - d1.y) + 30 * (d2.m - d1.m) + (D2 - D1);
+  // 360-day year (manual E-64): a d1 on the 31st counts as the 30th; a d2 on
+  // the 31st counts as the 1st of the next month, which is the same as 31.
+  const D1 = Math.min(d1.d, 30);
+  return 360 * (d2.y - d1.y) + 30 * (d2.m - d1.m) + (d2.d - D1);
 }
 
 export function addDays(date, days) {
@@ -375,6 +346,8 @@ export function depreciation(method, { n, iPct, PV, FV, j, YR1 }) {
             const whole = Math.trunc(np);
             const Zp = ((whole + 1) * (whole + 2 * (np - whole))) / 2;
             dep = ((np - k + 2) / Zp) * (base - dep1);
+            // The manual (E-70) scales year n+1 by (12−YR1)/12 as well.
+            if (k === n + 1) dep *= 1 - first;
           }
         }
         break;
@@ -443,7 +416,7 @@ export const BEVN_RELATIONS = {
   },
   MOS: (v) => v.MOS * v.SAL - (v.SAL - v.SBE),
   DOL: (v) => v.DOL * (v.SAL - v.VC - v.FC) - (v.SAL - v.VC),
-  DFL: (v) => v.DFL * (v.EBIT - v.ITR) - v.EBIT,
+  DFL: (v) => v.DFL * (v.EIT - v.ITR) - v.EIT,
   DCL: (v) => v.DCL * (v.SAL - v.VC - v.FC - v.ITR) - (v.SAL - v.VC),
   'QTY:SAL': (v) => v.SAL - v.PRC * v.QTY,
   'QTY:VC': (v) => v.VC - v.VCU * v.QTY,
