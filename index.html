@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#14171f" />
+    <meta name="description" content="Financial calculator simulator in the style of the FC-100V" />
+    <title>FC-100V Calculator</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon.svg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="calc" aria-label="FC-100V financial calculator">
+      <header class="brand">
+        <div class="brand-text">
+          <span class="model">FC-100V</span>
+          <span class="tagline">FINANCIAL CONSULTANT</span>
+        </div>
+        <div class="solar" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      </header>
+
+      <section class="bezel">
+        <div class="lcd" id="lcd" role="status" aria-live="polite">
+          <div class="indicators" id="indicators"></div>
+          <div class="lines" id="lines"></div>
+        </div>
+      </section>
+
+      <section class="upper">
+        <div class="pair" id="upper-left"></div>
+        <div class="pad" id="pad"></div>
+        <div class="pair" id="upper-right"></div>
+      </section>
+
+      <section class="grid five" id="finance"></section>
+      <section class="grid five" id="scientific"></section>
+      <section class="grid five numpad" id="numpad"></section>
+
+      <footer class="foot">
+        <button class="help-btn" id="help-btn" type="button">מדריך שימוש</button>
+      </footer>
+    </main>
+
+    <dialog id="help" dir="rtl" lang="he">
+      <form method="dialog">
+        <button class="close" aria-label="סגור">✕</button>
+      </form>
+      <h2>מדריך מהיר</h2>
+      <p>המחשבון עובד כמו ה-FC-100V: בוחרים מצב במקש המצב, גוללים ב-▲▼ בין המשתנים, מקלידים ערך ולוחצים <b>EXE</b>. כדי לחשב משתנה, עומדים עליו ולוחצים <b>SOLVE</b>.</p>
+      <h3>מצבים</h3>
+      <ul>
+        <li><b>COMP</b> – חישוב רגיל. <b>Ans</b> = התוצאה האחרונה.</li>
+        <li><b>CMPD</b> – ריבית דריבית, משכנתאות והלוואות: n, I%, PV, PMT, FV, P/Y, C/Y. השורה Set מחליפה בין תשלום בסוף תקופה (End) לתחילתה (Begin).</li>
+        <li><b>SMPL</b> – ריבית פשוטה: SI (ריבית) ו-SFV (סכום כולל).</li>
+        <li><b>CASH</b> – תזרים מזומנים: NPV, IRR, PBP (תקופת החזר), NFV. ב-Csh לוחצים EXE כדי להזין תזרימים (CF0, CF1…), ו-ESC לחזרה.</li>
+        <li><b>AMRT</b> – לוח סילוקין: יתרה (BAL), ריבית וקרן בתשלום PM1, וסכומים מ-PM1 עד PM2.</li>
+        <li><b>CNVR</b> – המרה בין ריבית נומינלית (APR) לאפקטיבית (EFF). n = מספר צבירות בשנה.</li>
+        <li><b>COST</b> – עלות (Cst), מחיר מכירה (Sel) ושיעור רווח (Mrg).</li>
+        <li><b>DAYS</b> – ימים בין תאריכים. תאריך מוקלד כ-8 ספרות, למשל 01012026.</li>
+        <li><b>STAT</b> – סטטיסטיקה: 1-VAR או רגרסיה ליניארית A+BX. מזינים נתונים ולוחצים SOLVE לתוצאות.</li>
+      </ul>
+      <h3>סימני כסף</h3>
+      <p>כסף שמתקבל חיובי, כסף שמשולם שלילי. הלוואה של 200,000: <code>PV=200000</code>, והתשלום יצא שלילי.</p>
+      <h3>מקשים מיוחדים</h3>
+      <ul>
+        <li><b>SHIFT</b> + מקש = הפונקציה הכתומה שמעליו (למשל SHIFT AC = כיבוי, SHIFT SETUP = איפוס הכול).</li>
+        <li><b>ALPHA</b> + מקש = המשתנה האדום (A, B, C, D, M).</li>
+        <li><b>SHIFT RCL</b> (STO) ואחריו מקש משתנה שומר ערך. <b>RCL</b> ואחריו משתנה משחזר אותו.</li>
+        <li><b>SETUP</b> – תשלום Begin/End, פורמט תאריך, שנה של 365/360 ימים ומספר ספרות אחרי הנקודה (Fix).</li>
+        <li><b>(−)</b> = מספר שלילי. מינוס בתחילת הקלדה נחשב גם הוא לשלילי.</li>
+      </ul>
+      <h3>מקלדת</h3>
+      <p>ספרות ופעולות, Enter = EXE, Backspace = DEL, Delete = AC, Esc = ESC, חיצים לניווט, S = SOLVE.</p>
+      <p class="small">סימולטור עצמאי, ללא קשר ליצרנית המחשבון. הערכים נשמרים במכשיר.</p>
+    </dialog>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>
