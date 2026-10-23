@@ -175,15 +175,23 @@ export function evaluate(tokens, ctxOrVars = {}) {
   const vars = ctx.vars;
   if (!tokens.length) throw syntaxError();
 
-  // a,bΔ% — percentage change from a to b.
+  // FC-200V Δ% operates on the expression before it: e.g. 46−40Δ% = 15,
+  // 300+500Δ% = 160 (manual E-30). The last top-level +/− supplies the
+  // reference value; keep the old a,b form for backwards compatibility.
   if (tokens[tokens.length - 1] === 'deltaPct') {
     const body = tokens.slice(0, -1);
     const comma = topLevelComma(body);
-    if (comma < 0) throw syntaxError();
-    const a = evaluate(body.slice(0, comma), ctx);
-    const b = evaluate(body.slice(comma + 1), ctx);
-    if (a === 0) throw mathError();
-    return clean(((b - a) / a) * 100);
+    if (comma >= 0) {
+      const a = evaluate(body.slice(0, comma), ctx);
+      const b = evaluate(body.slice(comma + 1), ctx);
+      if (a === 0) throw mathError();
+      return clean(((b - a) / a) * 100);
+    }
+    const split = topLevelLastAddSub(body);
+    if (split < 0) throw syntaxError();
+    const reference = evaluate(body.slice(split + 1), ctx);
+    if (reference === 0) throw mathError();
+    return clean((100 * evaluate(body, ctx)) / reference);
   }
 
   const FUNCS = makeFuncs(ctx);
@@ -331,6 +339,20 @@ function topLevelComma(tokens) {
     else if (t === ',' && depth === 0) return i;
   }
   return -1;
+}
+
+// Find the rightmost binary +/− outside parentheses. Unary minus is '-' and
+// does not use the subtraction token '−'.
+function topLevelLastAddSub(tokens) {
+  let depth = 0;
+  let last = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.endsWith('(')) depth++;
+    else if (t === ')') depth--;
+    else if (depth === 0 && (t === '+' || t === '−')) last = i;
+  }
+  return last;
 }
 
 // ---------- number display ----------
