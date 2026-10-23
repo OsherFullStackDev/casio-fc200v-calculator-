@@ -153,6 +153,28 @@ export function solveTVM(target, v) {
   throw mathError();
 }
 
+// Flows that change sign more than once can have several IRRs. Take the
+// root closest to 0%, searching outward from 0 in both directions and then
+// bisecting; plain Newton can jump to a far root instead.
+function rootNearZero(f) {
+  const steps = 20000;
+  const at = (side, k) => (side > 0 ? 1000 * (k / steps) ** 3 : -0.9999 * (k / steps));
+  const prev = { 1: [0, f(0)], [-1]: [0, f(0)] };
+  for (let k = 1; k <= steps; k++) {
+    // Compare the next points on each side by distance from zero.
+    for (const side of at(1, k) <= -at(-1, k) ? [1, -1] : [-1, 1]) {
+      const r = at(side, k);
+      const fr = f(r);
+      const [r0, f0] = prev[side];
+      if (Number.isFinite(f0) && Number.isFinite(fr) && Math.sign(f0) !== Math.sign(fr)) {
+        return side > 0 ? bisect(f, r0, r, f0) : bisect(f, r, r0, fr);
+      }
+      prev[side] = [r, fr];
+    }
+  }
+  throw mathError();
+}
+
 // ---------- CASH: discounted cash flow ----------
 export function npv(iPct, flows) {
   if (!flows.length) throw mathError();
@@ -167,7 +189,7 @@ export function nfv(iPct, flows) {
 export function irr(flows) {
   if (flows.length < 2) throw mathError();
   const f = (r) => flows.reduce((s, cf, k) => s + cf / (1 + r) ** k, 0);
-  const rate = findRoot(f, 0.1, -0.9999, 1000) * 100;
+  const rate = rootNearZero(f) * 100;
   if (rate < -50) throw mathError(); // the unit's documented limit
   return finite(rate);
 }

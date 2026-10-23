@@ -30,6 +30,16 @@ npm start        # שרת על http://localhost:8080
 npm test         # בדיקות (Node 20+)
 ```
 
+## בדיקה מול מקור בלתי תלוי
+
+`tests/reference.test.js` משווה את הנוסחאות ל-4,225 ערכים שחושבו בלי הקוד הזה: numpy-financial (CMPD, NPV, IRR), לוח השנה של Python (DAYS), סימולציית הלוואה ב-50 ספרות (AMRT), והנוסחאות מהמדריך של Casio שנכתבו מחדש ב-Python (כל השאר). כדי ליצור מחדש את הערכים:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install numpy-financial
+.venv/bin/python tools/make_reference.py cases.json
+.venv/bin/python tools/make_amrt_reference.py amrt.json
+```
+
 ## פריסה
 
 כל שירות לאתרים סטטיים מתאים. ב-Vercel: Import לרפו, בלי Framework, בלי Build Command, Output Directory = `.`

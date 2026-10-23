@@ -115,6 +115,8 @@ test('manual worked examples', () => {
 test('CASH limits from the manual', () => {
   assert.equal(F.pbp(10, [500, -100]), 0); // CF0 > 0
   assert.throws(() => F.irr([-1000, 100]), /Math ERROR/); // IRR < −50%
+  // Two IRRs (−34.8% and about −65%): the one nearest zero is returned.
+  near(F.irr([-71789.61, -1504.2, 21461.03, 7864.11, 1961.04, -1840.81]), -34.80479144720942, 1e-8);
 });
 
 test('BOND price and yield', () => {
